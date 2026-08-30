@@ -12,6 +12,8 @@
 #include "application/streaming_resampler.hpp"
 #include "application/timestamped_audio_buffer.hpp"
 #include "infrastructure/wav.hpp"
+#include "infrastructure/windows/reference_bus.hpp"
+#include "infrastructure/windows/telemetry_bus.hpp"
 #include "infrastructure/windows/wasapi_format.hpp"
 
 namespace {
@@ -149,6 +151,45 @@ void test_wasapi_stereo_float_downmix() {
           "stereo float downmix is incorrect");
 }
 
+void test_reference_bus_roundtrip() {
+  echonull::ReferenceBusWriter writer;
+  writer.open();
+  echonull::ReferenceBusReader reader;
+  require(reader.open(), "reference bus reader could not open the writer mapping");
+  const std::vector<float> expected{0.125F, -0.25F, 0.5F, -1.0F};
+  constexpr std::int64_t timestamp = 8'765'432'100;
+  writer.publish(timestamp, expected);
+  const auto blocks = reader.read_available();
+  require(!blocks.empty(), "reference bus published no readable block");
+  const auto& block = blocks.back();
+  require(block.timestamp_hns == timestamp, "reference bus changed the timestamp");
+  require(block.samples == expected, "reference bus changed the samples");
+}
+
+void test_telemetry_bus_roundtrip() {
+  LARGE_INTEGER counter{};
+  LARGE_INTEGER frequency{};
+  QueryPerformanceCounter(&counter);
+  QueryPerformanceFrequency(&frequency);
+  const auto now_hns = static_cast<std::int64_t>(
+      static_cast<long double>(counter.QuadPart) * 10'000'000.0L /
+      static_cast<long double>(frequency.QuadPart));
+
+  echonull::TelemetryBusWriter writer;
+  writer.open();
+  echonull::TelemetryBusReader reader;
+  require(reader.open(), "telemetry reader could not open the writer mapping");
+  const echonull::TelemetrySnapshot expected{now_hns, 0.625F, 3, 1, 0, 0};
+  writer.publish(expected);
+  const auto actual = reader.read_latest();
+  require(actual.has_value(), "telemetry bus returned no fresh snapshot");
+  require(std::abs(actual->output_level - expected.output_level) < 1.0e-6F,
+          "telemetry bus changed the microphone level");
+  require(actual->runtime_state == expected.runtime_state &&
+              actual->noise_state == expected.noise_state,
+          "telemetry bus changed the runtime state");
+}
+
 }  // namespace
 
 int main() {
@@ -160,6 +201,8 @@ int main() {
     test_wav_roundtrip();
     test_streaming_resampler_is_chunk_invariant();
     test_wasapi_stereo_float_downmix();
+    test_reference_bus_roundtrip();
+    test_telemetry_bus_roundtrip();
     std::cout << "All EchoNull core tests passed.\n";
     return 0;
   } catch (const std::exception& error) {

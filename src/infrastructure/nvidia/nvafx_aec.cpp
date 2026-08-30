@@ -1,5 +1,6 @@
 #include "infrastructure/nvidia/nvafx_aec.hpp"
 
+#include <algorithm>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -128,6 +129,7 @@ void NvafxAec::initialize() {
 }
 
 void NvafxAec::reset() {
+  std::scoped_lock lock(impl_->mutex);
 #if ECHONULL_HAS_NVAFX
   if (impl_->handle != nullptr) {
     NvAFX_Reset(impl_->handle);
@@ -135,8 +137,20 @@ void NvafxAec::reset() {
     impl_->handle = nullptr;
   }
 #endif
-  std::scoped_lock lock(impl_->mutex);
   impl_->status = {};
+}
+
+void NvafxAec::set_intensity(const float intensity) {
+  const float value = std::clamp(intensity, 0.0F, 1.0F);
+  std::scoped_lock lock(impl_->mutex);
+  impl_->intensity = value;
+#if ECHONULL_HAS_NVAFX
+  if (impl_->handle != nullptr &&
+      NvAFX_SetFloat(impl_->handle, NVAFX_PARAM_INTENSITY_RATIO, value) !=
+          NVAFX_STATUS_SUCCESS) {
+    throw std::runtime_error("NvAFX_SetFloat(aec intensity) failed");
+  }
+#endif
 }
 
 void NvafxAec::process(const std::span<const float> near_end,
@@ -148,7 +162,8 @@ void NvafxAec::process(const std::span<const float> near_end,
   static_cast<void>(output);
   throw std::runtime_error("NvAFX is unavailable in this build");
 #else
-  const auto current = status();
+  std::scoped_lock lock(impl_->mutex);
+  const auto current = impl_->status;
   if (!current.ready || impl_->handle == nullptr) {
     throw std::runtime_error("NvAFX AEC is not initialized");
   }

@@ -119,7 +119,8 @@ void WasapiRenderer::run() {
     const auto device = DeviceManager::resolve(eRender, selector_, &resolved);
     {
       std::scoped_lock lock(status_mutex_);
-      endpoint_ = AudioEndpoint{AudioFlow::render, resolved.id, resolved.name, resolved.is_default};
+      endpoint_ = AudioEndpoint{AudioFlow::render, resolved.id, resolved.apo_guid,
+                                resolved.name, resolved.is_default};
     }
 
     ComPtr<IAudioClient> audio_client;

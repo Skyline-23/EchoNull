@@ -13,6 +13,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(ECHONULL_BUILD_TESTS "Build EchoNull unit tests" ON)
 set(AFX_SDK_ROOT "" CACHE PATH "Root of the NVIDIA Audio Effects SDK")
 
+include(FetchContent)
+FetchContent_Declare(vst2sdk
+  GIT_REPOSITORY https://github.com/Xaymar/vst2sdk.git
+  GIT_TAG 339d4f31590bf77c0d0d248e09a380ac6285e069
+  GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(vst2sdk)
+
 if(NOT AFX_SDK_ROOT AND DEFINED ENV{AFX_SDK_ROOT})
   file(TO_CMAKE_PATH "$ENV{AFX_SDK_ROOT}" AFX_SDK_ROOT)
 endif()
@@ -36,8 +43,8 @@ if(ECHONULL_NVAFX_INCLUDE_DIR AND ECHONULL_NVAFX_LIBRARY)
   message(STATUS "NVIDIA AFX SDK found at ${AFX_SDK_ROOT}")
 else()
   message(WARNING
-    "NVIDIA AFX SDK was not found. Device listing and tests will build, but "
-    "AEC run/validate commands will report that the SDK is unavailable. "
+    "NVIDIA AFX SDK was not found. The plug-in and tests will build, but "
+    "AEC processing will stay in safe bypass mode. "
     "Configure with -DAFX_SDK_ROOT=<path> after installing AFX SDK 2.1 or newer.")
 endif()
 
@@ -62,13 +69,18 @@ endif()
 add_library(echonull_infrastructure
   src/infrastructure/config.cpp
   src/infrastructure/nvidia/nvafx_aec.cpp
+  src/infrastructure/nvidia/nvafx_denoiser.cpp
   src/infrastructure/wav.cpp
   src/infrastructure/windows/device_manager.cpp
+  src/infrastructure/windows/equalizer_apo.cpp
+  src/infrastructure/windows/reference_bus.cpp
+  src/infrastructure/windows/telemetry_bus.cpp
   src/infrastructure/windows/wasapi_capture.cpp
   src/infrastructure/windows/wasapi_format.cpp
   src/infrastructure/windows/wasapi_renderer.cpp)
 
-target_link_libraries(echonull_infrastructure PUBLIC echonull_domain echonull_application PRIVATE ole32 uuid avrt)
+target_link_libraries(echonull_infrastructure PUBLIC echonull_domain echonull_application
+  PRIVATE ole32 uuid avrt advapi32)
 target_include_directories(echonull_infrastructure PUBLIC src)
 target_compile_definitions(echonull_infrastructure PUBLIC
   NOMINMAX WIN32_LEAN_AND_MEAN ECHONULL_HAS_NVAFX=${ECHONULL_HAS_NVAFX})
@@ -99,40 +111,28 @@ if(ECHONULL_HAS_NVAFX)
   endfunction()
 endif()
 
-add_library(echonull_bootstrap
-  src/bootstrap/live_session.cpp)
-target_include_directories(echonull_bootstrap PUBLIC src)
-target_link_libraries(echonull_bootstrap PUBLIC echonull_application echonull_infrastructure)
-if(MSVC)
-  target_compile_options(echonull_bootstrap PRIVATE /W4 /permissive- /utf-8 /EHsc)
-endif()
-
-add_executable(echonull src/main.cpp)
-
-target_include_directories(echonull PRIVATE src)
-target_link_libraries(echonull PRIVATE echonull_bootstrap)
-set_target_properties(echonull PROPERTIES OUTPUT_NAME "echonull-cli")
-
+add_library(echonull_plugin MODULE
+  src/plugin/plugin_editor.cpp
+  src/plugin/plugin_processor.cpp
+  src/plugin/vst2_plugin.cpp)
+target_include_directories(echonull_plugin PRIVATE
+  src
+  "${vst2sdk_SOURCE_DIR}/include")
+target_link_libraries(echonull_plugin PRIVATE echonull_infrastructure
+  comctl32 gdi32 ole32 user32 uxtheme)
+set_target_properties(echonull_plugin PROPERTIES
+  OUTPUT_NAME "EchoNullPlugin"
+  PREFIX "")
 if(ECHONULL_HAS_NVAFX)
-  echonull_copy_nvafx_runtime(echonull)
+  echonull_copy_nvafx_runtime(echonull_plugin)
 endif()
-
+add_custom_command(TARGET echonull_plugin POST_BUILD
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/config/plugin.ini"
+    "$<TARGET_FILE_DIR:echonull_plugin>/echonull.ini"
+  VERBATIM)
 if(MSVC)
-  target_compile_options(echonull PRIVATE /W4 /permissive- /utf-8 /EHsc)
-endif()
-
-add_executable(echonull_gui WIN32
-  src/presentation/windows/gui_main.cpp)
-target_include_directories(echonull_gui PRIVATE src)
-target_link_libraries(echonull_gui PRIVATE echonull_bootstrap comctl32)
-set_target_properties(echonull_gui PROPERTIES
-  OUTPUT_NAME "EchoNull"
-  VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
-if(ECHONULL_HAS_NVAFX)
-  echonull_copy_nvafx_runtime(echonull_gui)
-endif()
-if(MSVC)
-  target_compile_options(echonull_gui PRIVATE /W4 /permissive- /utf-8 /EHsc)
+  target_compile_options(echonull_plugin PRIVATE /W4 /permissive- /utf-8 /EHsc)
 endif()
 
 if(ECHONULL_BUILD_TESTS)
@@ -144,6 +144,20 @@ if(ECHONULL_BUILD_TESTS)
     target_compile_options(echonull_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
   endif()
   add_test(NAME echonull_core_tests COMMAND echonull_tests)
+  add_executable(echonull_plugin_smoke_tests
+    tests/plugin_smoke_tests.cpp)
+  target_include_directories(echonull_plugin_smoke_tests PRIVATE
+    "${vst2sdk_SOURCE_DIR}/include")
+  add_dependencies(echonull_plugin_smoke_tests echonull_plugin)
+  if(MSVC)
+    target_compile_options(echonull_plugin_smoke_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+  endif()
+  add_test(NAME echonull_plugin_smoke_tests
+    COMMAND echonull_plugin_smoke_tests "$<TARGET_FILE:echonull_plugin>")
+  add_test(NAME echonull_architecture_boundaries
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+      -File "${CMAKE_SOURCE_DIR}/tests/architecture_boundaries.ps1"
+      -SourceRoot "${CMAKE_SOURCE_DIR}/src")
   if(ECHONULL_HAS_NVAFX)
     echonull_copy_nvafx_runtime(echonull_tests)
   endif()

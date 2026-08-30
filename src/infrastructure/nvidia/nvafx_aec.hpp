@@ -18,6 +18,7 @@ class NvafxAec final : public IAecProcessor {
 
   void initialize() override;
   void reset() override;
+  void set_intensity(float intensity);
   void process(std::span<const float> near_end,
                std::span<const float> far_end,
                std::span<float> output) override;
@@ -29,4 +30,3 @@ class NvafxAec final : public IAecProcessor {
 };
 
 }  // namespace echonull
-

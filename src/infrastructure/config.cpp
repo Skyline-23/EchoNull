@@ -108,6 +108,9 @@ Config Config::load(const std::filesystem::path& path) {
   if (const auto* value = get("reference")) config.devices.reference = utf8_to_wide(*value);
   if (const auto* value = get("output")) config.devices.output = utf8_to_wide(*value);
   if (const auto* value = get("model")) config.model_path = utf8_to_wide(*value);
+  if (const auto* value = get("noise_model")) {
+    config.noise_model_path = utf8_to_wide(*value);
+  }
   if (const auto* value = get("sample_rate")) config.sample_rate = static_cast<std::uint32_t>(std::stoul(*value));
   if (const auto* value = get("delay_ms")) config.delay_ms = std::stod(*value);
   if (const auto* value = get("auto_delay")) config.auto_delay = parse_bool(*value);
@@ -152,6 +155,22 @@ std::filesystem::path Config::resolve_model_path() const {
     if (std::filesystem::exists(candidate)) {
       return candidate;
     }
+  }
+  return {};
+}
+
+std::filesystem::path Config::resolve_noise_model_path() const {
+  if (!noise_model_path.empty()) {
+    return std::filesystem::absolute(noise_model_path);
+  }
+
+  const auto root = environment_path(L"AFX_SDK_ROOT");
+  if (root.empty()) return {};
+
+  const auto base = root / L"features" / L"nvafxdenoiser" / L"models";
+  for (const auto* architecture : {L"blackwell", L"ada", L"ampere", L"turing"}) {
+    const auto candidate = base / architecture / L"denoiser_48k.trtpkg";
+    if (std::filesystem::exists(candidate)) return candidate;
   }
   return {};
 }

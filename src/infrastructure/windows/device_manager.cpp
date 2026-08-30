@@ -13,6 +13,10 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
+constexpr PROPERTYKEY kAudioEndpointGuidProperty = {
+    {0x1da5d803, 0xd492, 0x4edd, {0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e}},
+    4};
+
 void check_hr(const HRESULT result, const char* action) {
   if (FAILED(result)) {
     std::ostringstream message;
@@ -56,6 +60,22 @@ std::wstring DeviceManager::friendly_name(IMMDevice* device) {
   return name;
 }
 
+std::wstring DeviceManager::apo_guid(IMMDevice* device) {
+  ComPtr<IPropertyStore> properties;
+  check_hr(device->OpenPropertyStore(STGM_READ, &properties), "IMMDevice::OpenPropertyStore");
+  PROPVARIANT value;
+  PropVariantInit(&value);
+  check_hr(properties->GetValue(kAudioEndpointGuidProperty, &value),
+           "IPropertyStore::GetValue(PKEY_AudioEndpoint_GUID)");
+  const std::wstring guid =
+      value.vt == VT_LPWSTR && value.pwszVal != nullptr ? value.pwszVal : L"";
+  PropVariantClear(&value);
+  if (guid.empty()) {
+    throw std::runtime_error("audio endpoint does not expose PKEY_AudioEndpoint_GUID");
+  }
+  return guid;
+}
+
 std::vector<DeviceInfo> DeviceManager::list(const EDataFlow flow) {
   const auto enumerator = create_enumerator();
   ComPtr<IMMDeviceCollection> collection;
@@ -76,7 +96,8 @@ std::vector<DeviceInfo> DeviceManager::list(const EDataFlow flow) {
     check_hr(collection->Item(index, &device), "IMMDeviceCollection::Item");
     auto id = endpoint_id(device.Get());
     const bool is_default = id == default_id;
-    devices.push_back(DeviceInfo{flow, std::move(id), friendly_name(device.Get()), is_default});
+    devices.push_back(DeviceInfo{
+        flow, std::move(id), apo_guid(device.Get()), friendly_name(device.Get()), is_default});
   }
   return devices;
 }
@@ -113,6 +134,7 @@ ComPtr<IMMDevice> DeviceManager::resolve(const EDataFlow flow,
   if (resolved != nullptr) {
     resolved->flow = flow;
     resolved->id = endpoint_id(device.Get());
+    resolved->apo_guid = apo_guid(device.Get());
     resolved->name = friendly_name(device.Get());
     resolved->is_default = selector.empty() || lower(selector) == L"default";
   }
@@ -125,7 +147,8 @@ std::vector<AudioEndpoint> WasapiDeviceCatalog::list(const AudioFlow flow) const
   std::vector<AudioEndpoint> endpoints;
   endpoints.reserve(native_devices.size());
   for (const auto& device : native_devices) {
-    endpoints.push_back(AudioEndpoint{flow, device.id, device.name, device.is_default});
+    endpoints.push_back(
+        AudioEndpoint{flow, device.id, device.apo_guid, device.name, device.is_default});
   }
   return endpoints;
 }

@@ -31,6 +31,7 @@ enum class AudioFlow { capture, render };
 struct AudioEndpoint {
   AudioFlow flow = AudioFlow::capture;
   std::wstring id;
+  std::wstring apo_guid;
   std::wstring name;
   bool is_default = false;
 };

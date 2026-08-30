@@ -11,6 +11,7 @@ namespace echonull {
 struct Config {
   DeviceSelection devices;
   std::filesystem::path model_path;
+  std::filesystem::path noise_model_path;
   std::uint32_t sample_rate = kSampleRate;
   double delay_ms = 40.0;
   bool auto_delay = true;
@@ -23,6 +24,7 @@ struct Config {
 
   static Config load(const std::filesystem::path& path);
   [[nodiscard]] std::filesystem::path resolve_model_path() const;
+  [[nodiscard]] std::filesystem::path resolve_noise_model_path() const;
   [[nodiscard]] EngineSettings engine_settings() const;
 };
 

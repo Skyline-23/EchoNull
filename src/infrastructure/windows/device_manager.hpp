@@ -14,6 +14,7 @@ namespace echonull {
 struct DeviceInfo {
   EDataFlow flow = eAll;
   std::wstring id;
+  std::wstring apo_guid;
   std::wstring name;
   bool is_default = false;
 };
@@ -25,6 +26,7 @@ class DeviceManager {
                                                    const std::wstring& selector,
                                                    DeviceInfo* resolved = nullptr);
   static std::wstring endpoint_id(IMMDevice* device);
+  static std::wstring apo_guid(IMMDevice* device);
   static std::wstring friendly_name(IMMDevice* device);
 };
 

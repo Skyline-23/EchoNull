@@ -116,7 +116,8 @@ void WasapiCapture::run() {
     {
       std::scoped_lock lock(status_mutex_);
       endpoint_ = AudioEndpoint{loopback_ ? AudioFlow::render : AudioFlow::capture,
-                                resolved.id, resolved.name, resolved.is_default};
+                                resolved.id, resolved.apo_guid, resolved.name,
+                                resolved.is_default};
     }
 
     ComPtr<IAudioClient> audio_client;
