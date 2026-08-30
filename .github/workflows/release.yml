@@ -42,6 +42,9 @@ jobs:
             Authorization = "Bearer $env:NGC_API_KEY"
             Accept = "application/json"
           }
+          $downloadHeaders = @{
+            Authorization = "Bearer $env:NGC_API_KEY"
+          }
           $listing = Invoke-RestMethod `
             -Uri "$resourceUri/files" `
             -Method Get `
@@ -56,7 +59,7 @@ jobs:
           $archiveName = [Uri]::EscapeDataString([string]$archive.path)
           Invoke-WebRequest `
             -Uri "$resourceUri/files/$archiveName" `
-            -Headers $headers `
+            -Headers $downloadHeaders `
             -OutFile afx-sdk-resource.zip
           $actualHash = (Get-FileHash `
             -LiteralPath afx-sdk-resource.zip `
