@@ -53,9 +53,6 @@ target_include_directories(echonull_domain INTERFACE src)
 
 add_library(echonull_application
   src/application/delay_estimator.cpp
-  src/application/engine.cpp
-  src/application/erle_meter.cpp
-  src/application/sample_queue.cpp
   src/application/streaming_resampler.cpp
   src/application/timestamped_audio_buffer.cpp)
 
@@ -70,14 +67,10 @@ add_library(echonull_infrastructure
   src/infrastructure/config.cpp
   src/infrastructure/nvidia/nvafx_aec.cpp
   src/infrastructure/nvidia/nvafx_denoiser.cpp
-  src/infrastructure/wav.cpp
   src/infrastructure/windows/device_manager.cpp
   src/infrastructure/windows/equalizer_apo.cpp
   src/infrastructure/windows/reference_bus.cpp
-  src/infrastructure/windows/telemetry_bus.cpp
-  src/infrastructure/windows/wasapi_capture.cpp
-  src/infrastructure/windows/wasapi_format.cpp
-  src/infrastructure/windows/wasapi_renderer.cpp)
+  src/infrastructure/windows/telemetry_bus.cpp)
 
 target_link_libraries(echonull_infrastructure PUBLIC echonull_domain echonull_application
   PRIVATE ole32 uuid avrt advapi32)

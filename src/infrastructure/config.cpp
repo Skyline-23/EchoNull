@@ -104,9 +104,6 @@ Config Config::load(const std::filesystem::path& path) {
     return found == values.end() ? nullptr : &found->second;
   };
 
-  if (const auto* value = get("microphone")) config.devices.microphone = utf8_to_wide(*value);
-  if (const auto* value = get("reference")) config.devices.reference = utf8_to_wide(*value);
-  if (const auto* value = get("output")) config.devices.output = utf8_to_wide(*value);
   if (const auto* value = get("model")) config.model_path = utf8_to_wide(*value);
   if (const auto* value = get("noise_model")) {
     config.noise_model_path = utf8_to_wide(*value);
@@ -115,26 +112,15 @@ Config Config::load(const std::filesystem::path& path) {
   if (const auto* value = get("delay_ms")) config.delay_ms = std::stod(*value);
   if (const auto* value = get("auto_delay")) config.auto_delay = parse_bool(*value);
   if (const auto* value = get("max_delay_ms")) config.max_delay_ms = std::stod(*value);
-  if (const auto* value = get("intensity")) config.intensity = std::stof(*value);
-  if (const auto* value = get("diagnostics_interval_ms")) {
-    config.diagnostics_interval_ms = static_cast<std::uint32_t>(std::stoul(*value));
-  }
-  if (const auto* value = get("reconnect_delay_ms")) {
-    config.reconnect_delay_ms = static_cast<std::uint32_t>(std::stoul(*value));
-  }
   if (const auto* value = get("timeline_capacity_ms")) {
     config.timeline_capacity_ms = static_cast<std::uint32_t>(std::stoul(*value));
   }
-  if (const auto* value = get("record_directory")) config.record_directory = utf8_to_wide(*value);
 
   if (config.sample_rate != kSampleRate) {
     throw std::runtime_error("EchoNull currently requires sample_rate = 48000");
   }
   if (config.delay_ms < 0.0 || config.max_delay_ms < config.delay_ms || config.max_delay_ms > 1000.0) {
     throw std::runtime_error("delay_ms/max_delay_ms are outside the supported range");
-  }
-  if (config.intensity < 0.0F || config.intensity > 1.0F) {
-    throw std::runtime_error("intensity must be between 0.0 and 1.0");
   }
   return config;
 }
@@ -173,18 +159,6 @@ std::filesystem::path Config::resolve_noise_model_path() const {
     if (std::filesystem::exists(candidate)) return candidate;
   }
   return {};
-}
-
-EngineSettings Config::engine_settings() const {
-  EngineSettings settings;
-  settings.sample_rate = sample_rate;
-  settings.initial_delay_ms = delay_ms;
-  settings.auto_delay = auto_delay;
-  settings.max_delay_ms = max_delay_ms;
-  settings.diagnostics_interval_ms = diagnostics_interval_ms;
-  settings.timeline_capacity_ms = timeline_capacity_ms;
-  settings.record_directory = record_directory;
-  return settings;
 }
 
 }  // namespace echonull
