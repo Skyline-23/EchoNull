@@ -212,77 +212,11 @@ jobs:
       - name: Build architecture-specific installers
         shell: pwsh
         run: |
-          $packer = "build/Release/echonull_bundle_packer.exe"
-          $pluginBase = "build/Release/EchoNullPlugin.dll"
-          $setupStub = "build/Release/EchoNullSetupStub.exe"
-          foreach ($file in @($packer, $pluginBase, $setupStub)) {
-            if (-not (Test-Path -LiteralPath $file)) {
-              throw "A release packaging tool or base binary is missing: $file"
-            }
-          }
-
-          $runtimeFiles = @(
-            Get-ChildItem -LiteralPath (Join-Path $env:AFX_SDK_ROOT "bin") `
-              -Recurse -Filter *.dll -File
-            Get-ChildItem -LiteralPath (Join-Path $env:AFX_SDK_ROOT "features") `
-              -Recurse -Filter *.dll -File |
-              Where-Object { $_.DirectoryName -like "*\\bin" }
-          )
-          $licenses = @(
-            Join-Path $env:AFX_SDK_ROOT `
-              "license/NVIDIA-Software-License-Agreement-2025.05.05.pdf"
-            Join-Path $env:AFX_SDK_ROOT `
-              "license/product-specific-terms-for-nvidia-ai-products-2025.05.05.pdf"
-            Join-Path $env:AFX_SDK_ROOT `
-              "features/nvafxaec/license/NVIDIA-Models-Community-License-2025-04-15.pdf"
-          ) | Where-Object { Test-Path -LiteralPath $_ }
-          $variants = [ordered]@{
-            "Turing-RTX20" = "turing"
-            "Ampere-RTX30" = "ampere"
-            "Ada-RTX40" = "ada"
-            "Blackwell-RTX50" = "blackwell"
-          }
-
-          foreach ($variant in $variants.GetEnumerator()) {
-            $label = $variant.Key
-            $architecture = $variant.Value
-            $plugin = "EchoNullPlugin-$label.dll"
-            $setup = "EchoNullSetup-$label.exe"
-            Copy-Item -LiteralPath $pluginBase -Destination $plugin -Force
-
-            $arguments = @($plugin)
-            foreach ($runtime in $runtimeFiles) {
-              $arguments += @($runtime.Name, $runtime.FullName)
-            }
-            $arguments += @(
-              "aec_48k_$architecture.trtpkg",
-              (Join-Path $env:AFX_SDK_ROOT `
-                "features/nvafxaec/models/$architecture/aec_48k.trtpkg"),
-              "denoiser_48k_$architecture.trtpkg",
-              (Join-Path $env:AFX_SDK_ROOT `
-                "features/nvafxdenoiser/models/$architecture/denoiser_48k.trtpkg")
-            )
-            foreach ($license in $licenses) {
-              $arguments += @((Split-Path -Leaf $license), $license)
-            }
-            & $packer @arguments
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to package the $architecture plug-in."
-            }
-            & "build/Release/echonull_plugin_smoke_tests.exe" $plugin
-            if ($LASTEXITCODE -ne 0) {
-              throw "The $architecture plug-in failed its smoke test."
-            }
-
-            Copy-Item -LiteralPath $setupStub -Destination $setup -Force
-            & $packer $setup "EchoNullPlugin.dll" $plugin
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to package the $architecture installer."
-            }
-            Remove-Item -LiteralPath $plugin -Force
-            $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash *$setup" | Set-Content -LiteralPath "$setup.sha256" -NoNewline
-          }
+          ./tools/package_release.ps1 `
+            -SdkRoot "$env:AFX_SDK_ROOT" `
+            -BuildRoot "build/Release" `
+            -OutputRoot "." `
+            -ThrottleLimit 4
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
