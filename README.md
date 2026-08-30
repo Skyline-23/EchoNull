@@ -64,18 +64,23 @@ Download the proprietary dependencies from their official pages:
 - [VB-CABLE Virtual Audio Device](https://vb-audio.com/Cable/)
 
 The NVIDIA download requires signing in and accepting its Evaluation License.
-After extracting the core SDK, set `AFX_SDK_ROOT`, obtain an NGC API key, and
-download only the Blackwell 48 kHz AEC feature:
+After extracting the core SDK, configure the NGC CLI with a personal API key and
+download only the Blackwell 48 kHz AEC feature. The SDK's bundled feature script
+prints the API key, so the commands below use the authenticated NGC CLI directly:
 
 ```powershell
 $env:AFX_SDK_ROOT = "C:\path\to\AFX-SDK"
-$env:NGC_API_KEY = "your NGC key"
-Set-Location "$env:AFX_SDK_ROOT\features"
-.\download_features.ps1 --gpu_architecture blackwell `
-  --ngc-org nvidia --ngc-team maxine --effects aec-48k
+ngc config set
+ngc registry model download-version `
+  nvidia/maxine/afx_win_aec:2.1.0-48k-blackwell `
+  --dest C:\path\to\temporary-model-download
 ```
 
-Do not commit the API key, SDK binaries, or model package.
+Copy the verified `aec_48k.trtpkg` into
+`$env:AFX_SDK_ROOT\features\nvafxaec\models\blackwell`. The AEC header and
+runtime variants from the same model resource belong under the adjacent
+`include` and `bin` directories. Do not commit the API key, SDK binaries, or
+model package.
 
 An RTX 50-series GPU uses the SDK's `blackwell/aec_48k.trtpkg` model. EchoNull
 searches that path first when `model` is blank and `AFX_SDK_ROOT` is set.
@@ -90,6 +95,10 @@ cmake -S . -B build -A x64 -DAFX_SDK_ROOT="$env:AFX_SDK_ROOT"
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
+
+SDK builds copy the core, AEC, CUDA, TensorRT, and OpenSSL runtime DLLs into the
+selected build output directory. These generated proprietary binaries remain
+ignored by Git.
 
 Without the SDK, the project still builds device listing and the unit tests. The
 `run` and `validate` commands then fail with an explicit SDK-not-available error.

@@ -21,6 +21,10 @@ find_path(ECHONULL_NVAFX_INCLUDE_DIR
   NAMES nvAudioEffects.h
   HINTS "${AFX_SDK_ROOT}/include"
   NO_DEFAULT_PATH)
+find_path(ECHONULL_NVAFX_AEC_INCLUDE_DIR
+  NAMES nvAFXAec.h
+  HINTS "${AFX_SDK_ROOT}/features/nvafxaec/include"
+  NO_DEFAULT_PATH)
 find_library(ECHONULL_NVAFX_LIBRARY
   NAMES NVAudioEffects
   HINTS "${AFX_SDK_ROOT}/lib"
@@ -72,7 +76,25 @@ endif()
 
 if(ECHONULL_HAS_NVAFX)
   target_include_directories(echonull_infrastructure PRIVATE "${ECHONULL_NVAFX_INCLUDE_DIR}")
+  if(ECHONULL_NVAFX_AEC_INCLUDE_DIR)
+    target_include_directories(echonull_infrastructure PRIVATE "${ECHONULL_NVAFX_AEC_INCLUDE_DIR}")
+  endif()
   target_link_libraries(echonull_infrastructure PRIVATE "${ECHONULL_NVAFX_LIBRARY}")
+endif()
+
+if(ECHONULL_HAS_NVAFX)
+  file(GLOB_RECURSE ECHONULL_NVAFX_RUNTIME_DLLS CONFIGURE_DEPENDS
+    "${AFX_SDK_ROOT}/bin/*.dll"
+    "${AFX_SDK_ROOT}/features/nvafxaec/bin/*.dll")
+
+  function(echonull_copy_nvafx_runtime target)
+    foreach(runtime_dll IN LISTS ECHONULL_NVAFX_RUNTIME_DLLS)
+      add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+          "${runtime_dll}" "$<TARGET_FILE_DIR:${target}>"
+        VERBATIM)
+    endforeach()
+  endfunction()
 endif()
 
 add_library(echonull_bootstrap
@@ -89,6 +111,10 @@ target_include_directories(echonull PRIVATE src)
 target_link_libraries(echonull PRIVATE echonull_bootstrap)
 set_target_properties(echonull PROPERTIES OUTPUT_NAME "echonull-cli")
 
+if(ECHONULL_HAS_NVAFX)
+  echonull_copy_nvafx_runtime(echonull)
+endif()
+
 if(MSVC)
   target_compile_options(echonull PRIVATE /W4 /permissive- /utf-8 /EHsc)
 endif()
@@ -100,6 +126,9 @@ target_link_libraries(echonull_gui PRIVATE echonull_bootstrap comctl32)
 set_target_properties(echonull_gui PROPERTIES
   OUTPUT_NAME "EchoNull"
   VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+if(ECHONULL_HAS_NVAFX)
+  echonull_copy_nvafx_runtime(echonull_gui)
+endif()
 if(MSVC)
   target_compile_options(echonull_gui PRIVATE /W4 /permissive- /utf-8 /EHsc)
 endif()
@@ -113,4 +142,7 @@ if(ECHONULL_BUILD_TESTS)
     target_compile_options(echonull_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
   endif()
   add_test(NAME echonull_core_tests COMMAND echonull_tests)
+  if(ECHONULL_HAS_NVAFX)
+    echonull_copy_nvafx_runtime(echonull_tests)
+  endif()
 endif()

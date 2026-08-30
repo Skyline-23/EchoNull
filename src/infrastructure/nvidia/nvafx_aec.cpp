@@ -7,6 +7,15 @@
 
 #if ECHONULL_HAS_NVAFX
 #include <nvAudioEffects.h>
+#if __has_include(<nvAFXAec.h>)
+#include <nvAFXAec.h>
+#endif
+
+#if defined(NVAFX_EFFECT_AEC)
+#define ECHONULL_NVAFX_AEC_EFFECT NVAFX_EFFECT_AEC
+#else
+#define ECHONULL_NVAFX_AEC_EFFECT "aec"
+#endif
 
 #if defined(NVAFX_PARAM_NUM_SAMPLES_PER_INPUT_FRAME)
 #define ECHONULL_NVAFX_INPUT_FRAME_PARAM NVAFX_PARAM_NUM_SAMPLES_PER_INPUT_FRAME
@@ -66,7 +75,8 @@ void NvafxAec::initialize() {
     if (impl_->model_path.empty() || !std::filesystem::exists(impl_->model_path)) {
       throw std::runtime_error("NvAFX AEC model not found: " + impl_->model_path.string());
     }
-    check(NvAFX_CreateEffect(NVAFX_EFFECT_AEC, &impl_->handle), "NvAFX_CreateEffect(aec)");
+    check(NvAFX_CreateEffect(ECHONULL_NVAFX_AEC_EFFECT, &impl_->handle),
+          "NvAFX_CreateEffect(aec)");
     const auto model_utf8 = impl_->model_path.u8string();
     const auto* model = reinterpret_cast<const char*>(model_utf8.c_str());
     check(NvAFX_SetString(impl_->handle, NVAFX_PARAM_MODEL_PATH, model),
