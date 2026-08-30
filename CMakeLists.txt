@@ -49,6 +49,7 @@ add_library(echonull_application
   src/application/engine.cpp
   src/application/erle_meter.cpp
   src/application/sample_queue.cpp
+  src/application/streaming_resampler.cpp
   src/application/timestamped_audio_buffer.cpp)
 
 target_link_libraries(echonull_application PUBLIC echonull_domain)
@@ -64,6 +65,7 @@ add_library(echonull_infrastructure
   src/infrastructure/wav.cpp
   src/infrastructure/windows/device_manager.cpp
   src/infrastructure/windows/wasapi_capture.cpp
+  src/infrastructure/windows/wasapi_format.cpp
   src/infrastructure/windows/wasapi_renderer.cpp)
 
 target_link_libraries(echonull_infrastructure PUBLIC echonull_domain echonull_application PRIVATE ole32 uuid avrt)

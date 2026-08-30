@@ -4,11 +4,16 @@
 #include <wrl/client.h>
 
 #include <chrono>
+#include <cmath>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
+#include "application/streaming_resampler.hpp"
 #include "infrastructure/windows/device_manager.hpp"
+#include "infrastructure/windows/wasapi_format.hpp"
 
 namespace echonull {
 namespace {
@@ -78,6 +83,9 @@ StreamStatus WasapiCapture::status() const {
   {
     std::scoped_lock lock(status_mutex_);
     result.endpoint = endpoint_;
+    result.device_sample_rate = device_sample_rate_;
+    result.device_channels = device_channels_;
+    result.device_format = device_format_;
   }
   result.counters.packets = packets_.load();
   result.counters.frames = frames_.load();
@@ -116,16 +124,26 @@ void WasapiCapture::run() {
                                      reinterpret_cast<void**>(audio_client.GetAddressOf())),
                     "IMMDevice::Activate(IAudioClient)");
 
-    auto format = float_mono_format(sample_rate_);
-    DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
-                  AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
-                  AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+    WAVEFORMATEX* mix_format_raw = nullptr;
+    throw_if_failed(audio_client->GetMixFormat(&mix_format_raw), "IAudioClient::GetMixFormat");
+    const std::unique_ptr<WAVEFORMATEX, decltype(&CoTaskMemFree)> mix_format(
+        mix_format_raw, &CoTaskMemFree);
+    const WasapiFormat device_format(*mix_format);
+    {
+      std::scoped_lock lock(status_mutex_);
+      device_sample_rate_ = device_format.sample_rate();
+      device_channels_ = device_format.channels();
+      device_format_ = device_format.description();
+    }
+
+    DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
     if (loopback_) flags |= AUDCLNT_STREAMFLAGS_LOOPBACK;
     constexpr REFERENCE_TIME kBufferDurationHns = 200'000;
     throw_if_failed(audio_client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags,
                                              kBufferDurationHns, 0,
-                                             &format.Format, nullptr),
+                                             mix_format.get(), nullptr),
                     "IAudioClient::Initialize(capture)");
+    StreamingResampler resampler(device_format.sample_rate(), sample_rate_);
 
     ScopedHandle event(CreateEventW(nullptr, FALSE, FALSE, nullptr));
     if (event.get() == nullptr) throw std::runtime_error("CreateEventW failed");
@@ -168,23 +186,30 @@ void WasapiCapture::run() {
         const bool silent = (buffer_flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
         const bool discontinuity = (buffer_flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0;
         const bool timestamp_error = (buffer_flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0;
-        std::vector<float> silence;
-        std::span<const float> samples;
-        if (silent) {
-          silence.assign(frame_count, 0.0F);
-          samples = silence;
-        } else {
-          samples = {reinterpret_cast<const float*>(data), frame_count};
+        std::vector<float> device_mono(frame_count, 0.0F);
+        if (!silent) device_format.decode_mono(data, frame_count, device_mono);
+        if (discontinuity) {
+          ++discontinuities_;
+          resampler.reset();
         }
-        if (discontinuity) ++discontinuities_;
-        if (handler_) {
+        const auto packet_start_frame = resampler.input_frames_received();
+        auto converted = resampler.push(device_mono);
+        const auto packet_timestamp = timestamp_error
+                                          ? qpc_now_hns()
+                                          : static_cast<std::int64_t>(qpc_position_hns);
+        const auto relative_source_frames =
+            converted.first_input_frame - static_cast<double>(packet_start_frame);
+        const auto converted_timestamp = packet_timestamp + static_cast<std::int64_t>(std::llround(
+            relative_source_frames * static_cast<double>(kHundredNanosecondsPerSecond) /
+            static_cast<double>(device_format.sample_rate())));
+        if (handler_ && !converted.samples.empty()) {
           handler_(CapturePacket{
-              timestamp_error ? qpc_now_hns() : static_cast<std::int64_t>(qpc_position_hns),
-              samples,
+              converted_timestamp,
+              converted.samples,
               discontinuity});
         }
         ++packets_;
-        frames_ += frame_count;
+        frames_ += converted.samples.size();
         throw_if_failed(capture_client->ReleaseBuffer(frame_count),
                         "IAudioCaptureClient::ReleaseBuffer");
         throw_if_failed(capture_client->GetNextPacketSize(&next_frames),

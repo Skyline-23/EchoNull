@@ -46,6 +46,9 @@ struct StreamStatus {
   bool failed = false;
   AudioEndpoint endpoint;
   std::uint32_t sample_rate = 0;
+  std::uint32_t device_sample_rate = 0;
+  std::uint16_t device_channels = 0;
+  std::string device_format;
   StreamCounters counters;
   std::string error;
 };

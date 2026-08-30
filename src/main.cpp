@@ -142,6 +142,15 @@ void print_snapshot(const echonull::EngineSnapshot& snapshot) {
             << " ref_underruns=" << snapshot.reference_underruns
             << " out_dropped=" << snapshot.output_overruns;
   if (std::isfinite(snapshot.erle_db)) std::cout << " erle_db=" << snapshot.erle_db;
+  if (!snapshot.microphone.device_format.empty()) {
+    std::cout << " mic_native=\"" << snapshot.microphone.device_format << '"';
+  }
+  if (!snapshot.reference.device_format.empty()) {
+    std::cout << " ref_native=\"" << snapshot.reference.device_format << '"';
+  }
+  if (!snapshot.output.device_format.empty()) {
+    std::cout << " out_native=\"" << snapshot.output.device_format << '"';
+  }
   if (!snapshot.message.empty()) std::cout << " message=\"" << snapshot.message << '"';
   std::cout << '\n';
 }

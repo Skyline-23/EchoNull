@@ -22,21 +22,6 @@ inline void throw_if_failed(const HRESULT result, const char* action) {
   }
 }
 
-inline WAVEFORMATEXTENSIBLE float_mono_format(const std::uint32_t sample_rate) {
-  WAVEFORMATEXTENSIBLE format{};
-  format.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-  format.Format.nChannels = 1;
-  format.Format.nSamplesPerSec = sample_rate;
-  format.Format.wBitsPerSample = 32;
-  format.Format.nBlockAlign = sizeof(float);
-  format.Format.nAvgBytesPerSec = sample_rate * sizeof(float);
-  format.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
-  format.Samples.wValidBitsPerSample = 32;
-  format.dwChannelMask = SPEAKER_FRONT_CENTER;
-  format.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
-  return format;
-}
-
 class WorkerState {
  public:
   enum class Status { stopped, starting, ready, failed };

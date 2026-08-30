@@ -282,9 +282,24 @@ class MainWindow {
     SetWindowTextW(counters_label_, counters.str().c_str());
 
     std::wstring endpoints;
-    if (!snapshot.microphone.endpoint.name.empty()) endpoints += L"Mic: " + snapshot.microphone.endpoint.name;
-    if (!snapshot.reference.endpoint.name.empty()) endpoints += L"   Ref: " + snapshot.reference.endpoint.name;
-    if (!snapshot.output.endpoint.name.empty()) endpoints += L"   Out: " + snapshot.output.endpoint.name;
+    if (!snapshot.microphone.endpoint.name.empty()) {
+      endpoints += L"Mic: " + snapshot.microphone.endpoint.name;
+      if (!snapshot.microphone.device_format.empty()) {
+        endpoints += L" (" + echonull::utf8_to_wide(snapshot.microphone.device_format) + L")";
+      }
+    }
+    if (!snapshot.reference.endpoint.name.empty()) {
+      endpoints += L"   Ref: " + snapshot.reference.endpoint.name;
+      if (!snapshot.reference.device_format.empty()) {
+        endpoints += L" (" + echonull::utf8_to_wide(snapshot.reference.device_format) + L")";
+      }
+    }
+    if (!snapshot.output.endpoint.name.empty()) {
+      endpoints += L"   Out: " + snapshot.output.endpoint.name;
+      if (!snapshot.output.device_format.empty()) {
+        endpoints += L" (" + echonull::utf8_to_wide(snapshot.output.device_format) + L")";
+      }
+    }
     SetWindowTextW(endpoints_label_, endpoints.c_str());
   }
 

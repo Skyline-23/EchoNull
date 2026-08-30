@@ -39,10 +39,12 @@ class WasapiCapture final : public IAudioCaptureSource {
 
   mutable std::mutex status_mutex_;
   AudioEndpoint endpoint_;
+  std::uint32_t device_sample_rate_ = 0;
+  std::uint16_t device_channels_ = 0;
+  std::string device_format_;
   std::atomic<std::uint64_t> packets_{0};
   std::atomic<std::uint64_t> frames_{0};
   std::atomic<std::uint64_t> discontinuities_{0};
 };
 
 }  // namespace echonull
-

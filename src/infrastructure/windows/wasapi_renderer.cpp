@@ -4,11 +4,17 @@
 #include <wrl/client.h>
 
 #include <chrono>
+#include <cmath>
+#include <deque>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
+#include "application/streaming_resampler.hpp"
 #include "infrastructure/windows/device_manager.hpp"
+#include "infrastructure/windows/wasapi_format.hpp"
 
 namespace echonull {
 namespace {
@@ -90,6 +96,9 @@ StreamStatus WasapiRenderer::status() const {
   {
     std::scoped_lock lock(status_mutex_);
     result.endpoint = endpoint_;
+    result.device_sample_rate = device_sample_rate_;
+    result.device_channels = device_channels_;
+    result.device_format = device_format_;
   }
   result.counters.packets = packets_.load();
   result.counters.frames = frames_.load();
@@ -117,15 +126,25 @@ void WasapiRenderer::run() {
     throw_if_failed(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
                                      reinterpret_cast<void**>(audio_client.GetAddressOf())),
                     "IMMDevice::Activate(IAudioClient)");
-    auto format = float_mono_format(sample_rate_);
-    constexpr DWORD kFlags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
-                             AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
-                             AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+    WAVEFORMATEX* mix_format_raw = nullptr;
+    throw_if_failed(audio_client->GetMixFormat(&mix_format_raw), "IAudioClient::GetMixFormat");
+    const std::unique_ptr<WAVEFORMATEX, decltype(&CoTaskMemFree)> mix_format(
+        mix_format_raw, &CoTaskMemFree);
+    const WasapiFormat device_format(*mix_format);
+    {
+      std::scoped_lock lock(status_mutex_);
+      device_sample_rate_ = device_format.sample_rate();
+      device_channels_ = device_format.channels();
+      device_format_ = device_format.description();
+    }
+    constexpr DWORD kFlags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
     constexpr REFERENCE_TIME kBufferDurationHns = 200'000;
     throw_if_failed(audio_client->Initialize(AUDCLNT_SHAREMODE_SHARED, kFlags,
                                              kBufferDurationHns, 0,
-                                             &format.Format, nullptr),
+                                             mix_format.get(), nullptr),
                     "IAudioClient::Initialize(render)");
+    StreamingResampler resampler(sample_rate_, device_format.sample_rate());
+    std::deque<float> converted_queue;
 
     ScopedHandle event(CreateEventW(nullptr, FALSE, FALSE, nullptr));
     if (event.get() == nullptr) throw std::runtime_error("CreateEventW failed");
@@ -167,9 +186,29 @@ void WasapiRenderer::run() {
       if (available == 0) continue;
       BYTE* raw = nullptr;
       throw_if_failed(render_client->GetBuffer(available, &raw), "IAudioRenderClient::GetBuffer");
-      auto output = std::span<float>(reinterpret_cast<float*>(raw), available);
-      const std::size_t written = queue_.pop(output);
-      if (written < output.size()) ++underruns_;
+      bool underrun = false;
+      while (converted_queue.size() < available) {
+        const auto missing = available - converted_queue.size();
+        const auto estimated_input = static_cast<std::size_t>(std::ceil(
+            static_cast<double>(missing) * static_cast<double>(sample_rate_) /
+            static_cast<double>(device_format.sample_rate())));
+        std::vector<float> pipeline_input(std::max<std::size_t>(estimated_input + 34, 64));
+        const std::size_t written = queue_.pop(pipeline_input);
+        underrun = underrun || written < pipeline_input.size();
+        auto converted = resampler.push(pipeline_input);
+        converted_queue.insert(converted_queue.end(), converted.samples.begin(),
+                               converted.samples.end());
+        if (converted.samples.empty() && pipeline_input.empty()) break;
+      }
+      std::vector<float> device_mono(available, 0.0F);
+      const auto copy_count = std::min<std::size_t>(available, converted_queue.size());
+      for (std::size_t index = 0; index < copy_count; ++index) {
+        device_mono[index] = converted_queue.front();
+        converted_queue.pop_front();
+      }
+      if (copy_count < available) underrun = true;
+      if (underrun) ++underruns_;
+      device_format.encode_mono(device_mono, raw, available);
       throw_if_failed(render_client->ReleaseBuffer(available, 0),
                       "IAudioRenderClient::ReleaseBuffer");
       ++packets_;
