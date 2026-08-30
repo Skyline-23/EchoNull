@@ -49,6 +49,24 @@ int wmain(const int argc, wchar_t** argv) {
     require(effect->num_params == 5, "plugin parameter contract changed");
     require((effect->flags & VST_EFFECT_FLAG_EDITOR) != 0,
             "embedded editor flag is missing");
+    require((effect->flags & VST_EFFECT_FLAG_CHUNKS) != 0,
+            "VST chunk persistence flag is missing");
+
+    effect->set_parameter(effect, 1, 0.0F);
+    void* chunk_pointer = nullptr;
+    const auto chunk_size = effect->control(
+        effect, VST_EFFECT_OPCODE_GET_CHUNK_DATA, 1, 0, &chunk_pointer, 0.0F);
+    require(chunk_size > 0 && chunk_pointer != nullptr,
+            "plug-in state chunk could not be saved");
+    const auto* chunk_begin = static_cast<const std::uint8_t*>(chunk_pointer);
+    std::vector<std::uint8_t> chunk(
+        chunk_begin, chunk_begin + static_cast<std::size_t>(chunk_size));
+    effect->set_parameter(effect, 1, 1.0F);
+    require(effect->control(effect, VST_EFFECT_OPCODE_SET_CHUNK_DATA, 1,
+                            static_cast<intptr_t>(chunk.size()), chunk.data(),
+                            0.0F) == 1 &&
+                effect->get_parameter(effect, 1) < 0.5F,
+            "plug-in state chunk could not be restored");
 
     vst_rect_t* editor_rect = nullptr;
     require(effect->control(effect, VST_EFFECT_OPCODE_EDITOR_GET_RECT, 0, 0,
@@ -90,7 +108,6 @@ int wmain(const int argc, wchar_t** argv) {
     effect->control(effect, VST_EFFECT_OPCODE_INITIALIZE, 0, 0, nullptr, 0.0F);
     effect->control(effect, VST_EFFECT_OPCODE_SET_SAMPLE_RATE, 0, 0, nullptr, 96'000.0F);
     effect->control(effect, VST_EFFECT_OPCODE_SET_BLOCK_SIZE, 0, 960, nullptr, 0.0F);
-    effect->set_parameter(effect, 0, 0.0F);
     effect->control(effect, VST_EFFECT_OPCODE_SUSPEND_RESUME, 0, 1, nullptr, 0.0F);
     effect->control(effect, VST_EFFECT_OPCODE_PROCESS_BEGIN, 0, 0, nullptr, 0.0F);
 
@@ -102,7 +119,7 @@ int wmain(const int argc, wchar_t** argv) {
     float* outputs[2] = {output_left.data(), output_right.data()};
     effect->process_float(effect, inputs, outputs, 960);
     require(output_left == left && output_right == right,
-            "reference mode is not bit-transparent");
+            "disabled AEC is not bit-transparent");
 
     effect->control(effect, VST_EFFECT_OPCODE_PROCESS_END, 0, 0, nullptr, 0.0F);
     effect->control(effect, VST_EFFECT_OPCODE_SUSPEND_RESUME, 0, 0, nullptr, 0.0F);

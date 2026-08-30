@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 #include <span>
 #include <vector>
 
@@ -14,8 +15,8 @@
 #include "infrastructure/nvidia/nvafx_aec.hpp"
 #include "infrastructure/nvidia/nvafx_denoiser.hpp"
 #include "infrastructure/nvidia/packaged_runtime.hpp"
-#include "infrastructure/windows/reference_bus.hpp"
 #include "infrastructure/windows/telemetry_bus.hpp"
+#include "infrastructure/windows/wasapi_loopback.hpp"
 
 namespace echonull {
 namespace {
@@ -83,15 +84,21 @@ std::vector<float> downmix(const float* const* inputs,
 }  // namespace
 
 struct PluginProcessor::Impl {
+  struct ReferenceBlock {
+    std::int64_t timestamp_hns = 0;
+    std::vector<float> samples;
+  };
+
   std::unique_ptr<StreamingResampler> input_resampler;
   std::unique_ptr<StreamingResampler> output_resampler;
-  std::unique_ptr<ReferenceBusWriter> reference_writer;
-  std::unique_ptr<ReferenceBusReader> reference_reader;
+  std::unique_ptr<WasapiLoopbackCapture> loopback;
   std::unique_ptr<TelemetryBusWriter> telemetry_writer;
   std::unique_ptr<TimestampedAudioBuffer> reference_timeline;
   std::unique_ptr<DelayEstimator> delay_estimator;
   std::unique_ptr<NvafxAec> aec;
   std::unique_ptr<NvafxDenoiser> denoiser;
+  std::mutex reference_mutex;
+  std::deque<ReferenceBlock> pending_reference;
   std::deque<float> near_queue;
   std::deque<float> output_queue;
   std::int64_t input_origin_hns = 0;
@@ -108,19 +115,19 @@ struct PluginProcessor::Impl {
 PluginProcessor::PluginProcessor() : impl_(std::make_unique<Impl>()) {}
 PluginProcessor::~PluginProcessor() { stop(); }
 
-void PluginProcessor::set_mode(const PluginMode mode) {
-  if (mode_ == mode) return;
+void PluginProcessor::set_reference_endpoint(std::wstring endpoint_id) {
+  if (reference_endpoint_id_ == endpoint_id) return;
   stop();
-  mode_ = mode;
+  reference_endpoint_id_ = std::move(endpoint_id);
   if (!plugin_path_.empty()) start(plugin_path_);
 }
 
 void PluginProcessor::set_aec_enabled(const bool enabled) noexcept {
   aec_enabled_.store(enabled, std::memory_order_relaxed);
-  if (!enabled && mode_ == PluginMode::aec) {
+  if (!enabled) {
     runtime_state_.store(PluginRuntimeState::bypassed,
                          std::memory_order_relaxed);
-  } else if (enabled && mode_ == PluginMode::aec) {
+  } else {
     runtime_state_.store(impl_->aec_ready ? PluginRuntimeState::waiting_for_reference
                                           : PluginRuntimeState::error,
                          std::memory_order_relaxed);
@@ -182,14 +189,6 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
         std::make_unique<StreamingResampler>(sample_rate_, kSampleRate);
     impl_->input_origin_hns = 0;
 
-    if (mode_ == PluginMode::reference) {
-      impl_->reference_writer = std::make_unique<ReferenceBusWriter>();
-      impl_->reference_writer->open();
-      runtime_state_.store(PluginRuntimeState::reference_active,
-                           std::memory_order_relaxed);
-      return;
-    }
-
     if (is_windows_audio_engine_process()) {
       try {
         impl_->telemetry_writer = std::make_unique<TelemetryBusWriter>();
@@ -215,7 +214,6 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
     impl_->delay_ms = 40.0;
     impl_->output_resampler =
         std::make_unique<StreamingResampler>(kSampleRate, sample_rate_);
-    impl_->reference_reader = std::make_unique<ReferenceBusReader>();
     impl_->reference_timeline = std::make_unique<TimestampedAudioBuffer>(
         impl_->timeline_capacity_ms, kSampleRate);
     impl_->delay_estimator = std::make_unique<DelayEstimator>(
@@ -291,6 +289,25 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
                              ? PluginRuntimeState::waiting_for_reference
                              : PluginRuntimeState::error),
         std::memory_order_relaxed);
+
+    if (!reference_endpoint_id_.empty()) {
+      impl_->loopback =
+          std::make_unique<WasapiLoopbackCapture>(reference_endpoint_id_);
+      impl_->loopback->start(
+          [this](const std::int64_t timestamp_hns,
+                 const std::span<const float> samples,
+                 const bool discontinuity) {
+            std::scoped_lock lock(impl_->reference_mutex);
+            if (discontinuity) impl_->pending_reference.clear();
+            impl_->pending_reference.push_back(
+                Impl::ReferenceBlock{timestamp_hns,
+                                     std::vector<float>(samples.begin(),
+                                                        samples.end())});
+            while (impl_->pending_reference.size() > 256) {
+              impl_->pending_reference.pop_front();
+            }
+          });
+    }
   } catch (...) {
     stop();
     aec_error_reason_.store(PluginErrorReason::package,
@@ -308,8 +325,7 @@ void PluginProcessor::stop() noexcept {
   }
   impl_->input_resampler.reset();
   impl_->output_resampler.reset();
-  impl_->reference_writer.reset();
-  impl_->reference_reader.reset();
+  impl_->loopback.reset();
   impl_->reference_timeline.reset();
   impl_->telemetry_writer.reset();
   impl_->delay_estimator.reset();
@@ -317,6 +333,10 @@ void PluginProcessor::stop() noexcept {
   impl_->denoiser.reset();
   impl_->near_queue.clear();
   impl_->output_queue.clear();
+  {
+    std::scoped_lock lock(impl_->reference_mutex);
+    impl_->pending_reference.clear();
+  }
   impl_->input_origin_hns = 0;
   impl_->near_queue_start_hns = 0;
   impl_->aec_frame_samples = 0;
@@ -357,8 +377,7 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
     return;
   }
 
-  if (mode_ == PluginMode::aec &&
-      !aec_enabled_.load(std::memory_order_relaxed) &&
+  if (!aec_enabled_.load(std::memory_order_relaxed) &&
       !noise_enabled_.load(std::memory_order_relaxed)) {
     runtime_state_.store(PluginRuntimeState::bypassed,
                          std::memory_order_relaxed);
@@ -373,25 +392,26 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
     const auto converted_timestamp = impl_->input_origin_hns +
         samples_to_hns(converted.first_input_frame, sample_rate_);
 
-    if (mode_ == PluginMode::reference) {
-      if (impl_->reference_writer && !converted.samples.empty()) {
-        impl_->reference_writer->publish(converted_timestamp, converted.samples);
-      }
-      runtime_state_.store(PluginRuntimeState::reference_active,
-                           std::memory_order_relaxed);
-      update_meter();
-      return;
-    }
-
     if (!converted.samples.empty()) {
       if (impl_->near_queue.empty()) impl_->near_queue_start_hns = converted_timestamp;
       impl_->near_queue.insert(impl_->near_queue.end(),
                                converted.samples.begin(), converted.samples.end());
     }
-    if (impl_->reference_reader && impl_->reference_timeline) {
-      for (auto& block : impl_->reference_reader->read_available()) {
+    if (impl_->reference_timeline) {
+      std::deque<Impl::ReferenceBlock> pending;
+      {
+        std::scoped_lock lock(impl_->reference_mutex);
+        pending.swap(impl_->pending_reference);
+      }
+      for (auto& block : pending) {
         impl_->reference_timeline->push(block.timestamp_hns, block.samples);
       }
+    }
+
+    const bool reference_failed = impl_->loopback && impl_->loopback->failed();
+    if (reference_failed) {
+      aec_error_reason_.store(PluginErrorReason::reference_capture,
+                              std::memory_order_relaxed);
     }
 
     const std::size_t frame_samples = impl_->aec_frame_samples == 0
@@ -436,8 +456,11 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
         runtime_state_.store(
             !aec_enabled_.load(std::memory_order_relaxed)
                 ? PluginRuntimeState::bypassed
-                : (impl_->aec_ready ? PluginRuntimeState::waiting_for_reference
-                                    : PluginRuntimeState::error),
+                : (reference_failed
+                       ? PluginRuntimeState::error
+                       : (impl_->aec_ready
+                              ? PluginRuntimeState::waiting_for_reference
+                              : PluginRuntimeState::error)),
             std::memory_order_relaxed);
       }
 

@@ -67,11 +67,9 @@ void draw_label(HDC dc, const wchar_t* text, RECT rect, HFONT font,
 
 }  // namespace
 
-PluginEditor::PluginEditor(HINSTANCE module, std::filesystem::path plugin_path,
-                           PluginEditorSettings settings,
+PluginEditor::PluginEditor(HINSTANCE module, PluginEditorSettings settings,
                            SettingsHandler settings_handler)
     : module_(module),
-      plugin_path_(std::move(plugin_path)),
       settings_(settings),
       settings_handler_(std::move(settings_handler)) {}
 
@@ -230,6 +228,7 @@ void PluginEditor::refresh() {
   endpoints_.clear();
   try {
     endpoints_ = EqualizerApoIntegration::enabled_playback_endpoints();
+    LRESULT selected_item = CB_ERR;
     for (std::size_t index = 0; index < endpoints_.size(); ++index) {
       std::wstring label = endpoints_[index].name;
       if (endpoints_[index].is_default) label += L"  ·  Default";
@@ -239,15 +238,27 @@ void PluginEditor::refresh() {
       if (item != CB_ERR && item != CB_ERRSPACE) {
         SendMessageW(playback_combo_, CB_SETITEMDATA,
                      static_cast<WPARAM>(item), static_cast<LPARAM>(index));
+        if (endpoints_[index].id == settings_.playback_endpoint_id) {
+          selected_item = item;
+        }
       }
     }
     if (endpoints_.empty()) {
       EnableWindow(apply_button_, FALSE);
       set_status(L"No playback endpoint has Equalizer APO post-mix enabled.", false);
+    } else if (!EqualizerApoIntegration::capture_stage_guard_present()) {
+      SendMessageW(playback_combo_, CB_SETCURSEL,
+                   selected_item == CB_ERR ? 0 : selected_item, 0);
+      EnableWindow(apply_button_, FALSE);
+      set_status(L"Add Stage: capture above EchoNull, then press Refresh.", false);
     } else {
-      SendMessageW(playback_combo_, CB_SETCURSEL, 0, 0);
+      SendMessageW(playback_combo_, CB_SETCURSEL,
+                   selected_item == CB_ERR ? 0 : selected_item, 0);
       EnableWindow(apply_button_, TRUE);
-      set_status(L"Only Equalizer APO-enabled playback endpoints are shown.", true);
+      set_status(settings_.playback_endpoint_id.empty()
+                     ? L"Choose a playback endpoint, then apply."
+                     : L"Playback reference loaded from plug-in settings.",
+                 true);
     }
   } catch (const std::exception& error) {
     EnableWindow(apply_button_, FALSE);
@@ -266,7 +277,8 @@ void PluginEditor::apply() {
   }
   try {
     const auto& endpoint = endpoints_[static_cast<std::size_t>(endpoint_index)];
-    EqualizerApoIntegration::apply_reference_endpoint(endpoint, plugin_path_);
+    settings_.playback_endpoint_id = endpoint.id;
+    notify_settings();
     set_status(L"Reference applied: " + endpoint.name, true);
   } catch (const std::exception& error) {
     const auto message = exception_message(error);

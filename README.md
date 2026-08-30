@@ -12,13 +12,12 @@ and applicable NVIDIA license documents inside that DLL.
 
 ```text
 selected playback endpoint
-  -> Equalizer APO post-mix
-  -> EchoNullPlugin.dll (Reference mode, pass-through)
-  -> timestamped shared-memory reference bus
+  -> WASAPI shared-mode loopback (inside EchoNullPlugin.dll)
+  -> 48 kHz mono reference timeline
 
 existing microphone endpoint
   -> Equalizer APO capture stage
-  -> EchoNullPlugin.dll (AEC mode)
+  -> EchoNullPlugin.dll (NvAFX AEC)
   -> same microphone endpoint, processed in place
 ```
 
@@ -43,9 +42,10 @@ capture endpoint section where the plug-in was loaded. Playback choices are
 filtered to active endpoints that have Equalizer APO's post-mix processing
 registered and audio enhancements enabled.
 
-Applying a reference writes an endpoint-GUID-scoped Equalizer APO configuration
-for a second instance of the same DLL in transparent Reference mode. Audio
-continues through that playback instance unchanged.
+Applying a reference stores the selected endpoint ID in the existing VST
+instance's standard `ChunkData`. Equalizer APO's Auto Apply owns that state;
+EchoNull never edits `config.txt`, never creates a second playback instance,
+and therefore adds no processing or latency to the playback pipeline.
 
 The live capture instance in `audiodg.exe` publishes its processed output level
 and runtime state through a read-only telemetry mapping. The editor reads that
@@ -65,7 +65,7 @@ application
   resampling, timestamp buffers, delay estimation
       ^
 infrastructure
-  NvAFX, endpoint discovery, Equalizer APO config, shared reference bus
+  NvAFX, endpoint discovery, WASAPI loopback, cross-session telemetry
       ^
 adapter
   one Equalizer APO-compatible plug-in DLL with an embedded Win32 editor
@@ -84,12 +84,13 @@ NVIDIA headers.
 1. Download `EchoNullPlugin.dll` from the latest GitHub Release.
 2. Put it in `C:\Program Files\EqualizerAPO\VSTPlugins`.
 3. Open Equalizer APO Device Selector. Enable capture processing on the existing
-   microphone and post-mix processing on playback devices you want to use.
+   microphone and post-mix processing on playback devices you want listed in
+   the selector.
 4. In Configuration Editor, add `Stage: capture`, then import
    `EchoNullPlugin.dll` with the VST plug-in command. This follows whichever
    microphone capture pipeline has Equalizer APO enabled; no microphone GUID is
-   stored. **APPLY REFERENCE** also inserts the missing capture-stage guard when
-   the plug-in line is directly in `config.txt`.
+   stored. Keep this Stage control in the Configuration Editor; without it the
+   global configuration would also run the microphone effect on playback.
 5. Open the embedded panel, choose the playback reference, and press
    **APPLY REFERENCE**.
 
@@ -129,43 +130,29 @@ instance then reports a GPU/model error and safely bypasses processing.
 
 `.github/workflows/ci.yml` builds and tests every push and pull request without
 proprietary assets. `.github/workflows/release.yml` runs for `v*` tags or manual
-dispatch, downloads AFX SDK 2.1.0 from NGC, builds the self-contained DLL, runs
-the tests, writes a SHA-256 file, and uploads both files to GitHub Releases.
+dispatch, downloads AFX SDK 2.1.0 plus the 48 kHz Blackwell Denoiser feature
+from NGC, builds the self-contained DLL, runs the tests, writes a SHA-256 file,
+and uploads both files to GitHub Releases.
 
 Release builds require the repository Actions secret `NGC_CLI_API_KEY`. Keep it
 only in GitHub Secrets; never place it in a workflow, local config committed to
 Git, or command output.
 
-## Generated Equalizer APO reference
+## Equalizer APO state
 
-The panel creates `EchoNull-reference.txt` in Equalizer APO's configuration
-directory and maintains this marked include in `config.txt`:
-
-```text
-# EchoNull managed reference begin
-Device: all
-Include: EchoNull-reference.txt
-# EchoNull managed reference end
-```
-
-The generated file is equivalent to:
-
-```text
-Device: {SELECTED-PLAYBACK-ENDPOINT-GUID}
-Stage: post-mix
-VSTPlugin: Library "C:\path\to\EchoNullPlugin.dll" Mode 0
-```
-
-The microphone instance uses the default `Mode 1` (AEC). If the playback
-reference is stopped, stale, unavailable, or the NVIDIA model cannot load, the
-capture instance bypasses AEC rather than muting the microphone.
+The playback selection and effect controls are serialized by the plug-in as
+VST `ChunkData`, so Auto Apply can persist them as part of the one existing
+capture-stage plug-in line. EchoNull does not create or modify any Equalizer APO
+configuration file. If the playback reference is stopped, unavailable, or the
+NVIDIA model cannot load, the capture instance bypasses AEC rather than muting
+the microphone.
 
 ## Limitations
 
 - Applications using ASIO, WASAPI exclusive mode, RAW mode, or another path
   that bypasses Windows system effects also bypass EchoNull.
-- Equalizer APO must be active on both the selected playback endpoint and the
-  microphone capture endpoint.
+- Equalizer APO must be active on the microphone capture endpoint. The selector
+  currently lists only playback endpoints where post-mix is also enabled.
 - The first implementation targets normal mono/stereo endpoint layouts. A
   multichannel endpoint needs additional host-instance validation.
 - Equalizer APO loads third-party processing code under `audiodg.exe`; follow

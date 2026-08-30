@@ -9,7 +9,7 @@ on:
       tag_name:
         description: Release tag to create or update
         required: true
-        default: v0.1.0
+        default: v0.1.2
 
 permissions:
   contents: write
@@ -61,6 +61,38 @@ jobs:
           if (-not $header) { throw "nvAudioEffects.h was not found in the NGC resource." }
           $sdkRoot = Split-Path -Parent (Split-Path -Parent $header.FullName)
           "AFX_SDK_ROOT=$sdkRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Download NVIDIA Noise Removal feature
+        shell: pwsh
+        env:
+          NGC_CLI_API_KEY: ${{ secrets.NGC_CLI_API_KEY }}
+        run: |
+          $downloader = Join-Path $env:AFX_SDK_ROOT "features/download_features.ps1"
+          if (-not (Test-Path -LiteralPath $downloader)) {
+            throw "The AFX feature downloader was not found."
+          }
+
+          # NVIDIA's bundled script prints the credential by default. Remove
+          # that diagnostic before execution; GitHub Secrets are still the only
+          # source of the key.
+          $source = Get-Content -LiteralPath $downloader -Raw
+          $source = $source -replace `
+            '(?m)^\s*Write-Host\s+"API Key:\s*\$API_KEY"\s*$', `
+            'Write-Host "API Key: [REDACTED]"'
+          Set-Content -LiteralPath $downloader -Value $source -Encoding utf8
+
+          & $downloader `
+            -GPU_Architecture blackwell `
+            -Effects denoiser-48k `
+            -Output_Directory (Join-Path $env:AFX_SDK_ROOT "features")
+          if ($LASTEXITCODE -ne 0) {
+            throw "NVIDIA Noise Removal feature download failed."
+          }
+          $model = Join-Path $env:AFX_SDK_ROOT `
+            "features/nvafxdenoiser/models/blackwell/denoiser_48k.trtpkg"
+          if (-not (Test-Path -LiteralPath $model)) {
+            throw "The 48 kHz Blackwell Denoiser model was not downloaded."
+          }
 
       - name: Configure self-contained release
         shell: pwsh

@@ -2,7 +2,6 @@
 
 #include <Windows.h>
 
-#include <filesystem>
 #include <functional>
 #include <string>
 #include <vector>
@@ -14,8 +13,9 @@ namespace echonull {
 struct PluginEditorSettings {
   bool aec_enabled = true;
   float aec_strength = 1.0F;
-  bool noise_enabled = true;
+  bool noise_enabled = false;
   float noise_strength = 1.0F;
+  std::wstring playback_endpoint_id;
 };
 
 class PluginEditor {
@@ -25,8 +25,8 @@ class PluginEditor {
 
   using SettingsHandler = std::function<void(const PluginEditorSettings&)>;
 
-  PluginEditor(HINSTANCE module, std::filesystem::path plugin_path,
-               PluginEditorSettings settings, SettingsHandler settings_handler);
+  PluginEditor(HINSTANCE module, PluginEditorSettings settings,
+               SettingsHandler settings_handler);
   ~PluginEditor();
 
   PluginEditor(const PluginEditor&) = delete;
@@ -62,7 +62,6 @@ class PluginEditor {
   void set_status(std::wstring status, bool ok);
 
   HINSTANCE module_ = nullptr;
-  std::filesystem::path plugin_path_;
   PluginEditorSettings settings_;
   SettingsHandler settings_handler_;
   HWND window_ = nullptr;

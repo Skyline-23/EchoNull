@@ -5,20 +5,25 @@
 #include <deque>
 #include <filesystem>
 #include <memory>
+#include <string>
 
 namespace echonull {
 
-enum class PluginMode { reference = 0, aec = 1 };
 enum class PluginRuntimeState {
   idle,
-  reference_active,
   waiting_for_reference,
   aec_active,
   bypassed,
   error,
 };
 enum class NoiseRuntimeState { disabled, active, error };
-enum class PluginErrorReason { none, package, model_missing, runtime_or_gpu };
+enum class PluginErrorReason {
+  none,
+  package,
+  model_missing,
+  runtime_or_gpu,
+  reference_capture,
+};
 
 class PluginProcessor {
  public:
@@ -28,7 +33,7 @@ class PluginProcessor {
   PluginProcessor(const PluginProcessor&) = delete;
   PluginProcessor& operator=(const PluginProcessor&) = delete;
 
-  void set_mode(PluginMode mode);
+  void set_reference_endpoint(std::wstring endpoint_id);
   void set_aec_enabled(bool enabled) noexcept;
   void set_aec_strength(float strength) noexcept;
   void set_noise_enabled(bool enabled) noexcept;
@@ -39,7 +44,9 @@ class PluginProcessor {
   void process(const float* const* inputs, float** outputs,
                std::int32_t sample_count, std::uint32_t channel_count) noexcept;
 
-  [[nodiscard]] PluginMode mode() const { return mode_; }
+  [[nodiscard]] const std::wstring& reference_endpoint() const noexcept {
+    return reference_endpoint_id_;
+  }
   [[nodiscard]] bool aec_enabled() const noexcept {
     return aec_enabled_.load(std::memory_order_relaxed);
   }
@@ -71,7 +78,7 @@ class PluginProcessor {
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
-  PluginMode mode_ = PluginMode::aec;
+  std::wstring reference_endpoint_id_;
   std::atomic<bool> aec_enabled_{true};
   std::atomic<float> aec_strength_{1.0F};
   std::atomic<bool> noise_enabled_{false};

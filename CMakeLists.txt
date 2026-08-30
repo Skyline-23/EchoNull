@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(EchoNull VERSION 0.1.1 LANGUAGES CXX)
+project(EchoNull VERSION 0.1.2 LANGUAGES CXX)
 
 if(NOT WIN32)
   message(FATAL_ERROR "EchoNull currently supports Windows only.")
@@ -72,8 +72,9 @@ add_library(echonull_infrastructure
   src/infrastructure/text_encoding.cpp
   src/infrastructure/windows/device_manager.cpp
   src/infrastructure/windows/equalizer_apo.cpp
-  src/infrastructure/windows/reference_bus.cpp
-  src/infrastructure/windows/telemetry_bus.cpp)
+  src/infrastructure/windows/telemetry_bus.cpp
+  src/infrastructure/windows/wasapi_format.cpp
+  src/infrastructure/windows/wasapi_loopback.cpp)
 
 target_link_libraries(echonull_infrastructure PUBLIC echonull_domain echonull_application
   PRIVATE ole32 uuid avrt advapi32)
@@ -184,6 +185,14 @@ if(ECHONULL_BUILD_TESTS)
   endif()
   add_test(NAME echonull_plugin_smoke_tests
     COMMAND echonull_plugin_smoke_tests "$<TARGET_FILE:echonull_plugin>")
+  add_executable(echonull_wasapi_loopback_smoke
+    tests/wasapi_loopback_smoke.cpp)
+  target_link_libraries(echonull_wasapi_loopback_smoke
+    PRIVATE echonull_infrastructure)
+  if(MSVC)
+    target_compile_options(echonull_wasapi_loopback_smoke
+      PRIVATE /W4 /permissive- /utf-8 /EHsc)
+  endif()
   add_test(NAME echonull_architecture_boundaries
     COMMAND powershell -NoProfile -ExecutionPolicy Bypass
       -File "${CMAKE_SOURCE_DIR}/tests/architecture_boundaries.ps1"

@@ -8,7 +8,6 @@
 #include "application/delay_estimator.hpp"
 #include "application/streaming_resampler.hpp"
 #include "application/timestamped_audio_buffer.hpp"
-#include "infrastructure/windows/reference_bus.hpp"
 #include "infrastructure/windows/telemetry_bus.hpp"
 
 namespace {
@@ -90,21 +89,6 @@ void test_streaming_resampler_is_chunk_invariant() {
   }
 }
 
-void test_reference_bus_roundtrip() {
-  echonull::ReferenceBusWriter writer;
-  writer.open();
-  echonull::ReferenceBusReader reader;
-  require(reader.open(), "reference bus reader could not open the writer mapping");
-  const std::vector<float> expected{0.125F, -0.25F, 0.5F, -1.0F};
-  constexpr std::int64_t timestamp = 8'765'432'100;
-  writer.publish(timestamp, expected);
-  const auto blocks = reader.read_available();
-  require(!blocks.empty(), "reference bus published no readable block");
-  const auto& block = blocks.back();
-  require(block.timestamp_hns == timestamp, "reference bus changed the timestamp");
-  require(block.samples == expected, "reference bus changed the samples");
-}
-
 void test_telemetry_bus_roundtrip() {
   LARGE_INTEGER counter{};
   LARGE_INTEGER frequency{};
@@ -136,7 +120,6 @@ int main() {
     test_timestamped_buffer();
     test_delay_estimator();
     test_streaming_resampler_is_chunk_invariant();
-    test_reference_bus_roundtrip();
     test_telemetry_bus_roundtrip();
     std::cout << "All EchoNull core tests passed.\n";
     return 0;
