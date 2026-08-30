@@ -58,6 +58,25 @@ root.
 - Visual Studio C++ Build Tools and CMake
 - VB-CABLE or another virtual playback endpoint for bridge output
 
+Download the proprietary dependencies from their official pages:
+
+- [NVIDIA Maxine Windows Audio Effects SDK 2.1.0](https://catalog.ngc.nvidia.com/orgs/nvidia/maxine/resources/maxine_windows_audio_effects_sdk)
+- [VB-CABLE Virtual Audio Device](https://vb-audio.com/Cable/)
+
+The NVIDIA download requires signing in and accepting its Evaluation License.
+After extracting the core SDK, set `AFX_SDK_ROOT`, obtain an NGC API key, and
+download only the Blackwell 48 kHz AEC feature:
+
+```powershell
+$env:AFX_SDK_ROOT = "C:\path\to\AFX-SDK"
+$env:NGC_API_KEY = "your NGC key"
+Set-Location "$env:AFX_SDK_ROOT\features"
+.\download_features.ps1 --gpu_architecture blackwell `
+  --ngc-org nvidia --ngc-team maxine --effects aec-48k
+```
+
+Do not commit the API key, SDK binaries, or model package.
+
 An RTX 50-series GPU uses the SDK's `blackwell/aec_48k.trtpkg` model. EchoNull
 searches that path first when `model` is blank and `AFX_SDK_ROOT` is set.
 
@@ -81,6 +100,12 @@ List endpoint names and stable IDs:
 
 ```powershell
 .\build\Release\echonull-cli.exe devices
+```
+
+Run the preflight report before starting audio:
+
+```powershell
+.\build\Release\echonull-cli.exe doctor --config config\echonull.ini
 ```
 
 Edit `config/echonull.ini`. Device selectors may be `default`, an endpoint ID,

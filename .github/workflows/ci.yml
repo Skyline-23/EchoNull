@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure without proprietary NvAFX runtime
+        run: cmake -S . -B build -A x64 -DECHONULL_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Check Clean Architecture boundaries
+        shell: pwsh
+        run: ./tests/architecture_boundaries.ps1 -SourceRoot ./src
+

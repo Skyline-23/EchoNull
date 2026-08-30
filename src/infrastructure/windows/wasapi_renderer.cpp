@@ -3,6 +3,7 @@
 #include <Avrt.h>
 #include <wrl/client.h>
 
+#include <chrono>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -120,7 +121,7 @@ void WasapiRenderer::run() {
     constexpr DWORD kFlags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
                              AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
                              AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
-    constexpr REFERENCE_TIME kBufferDurationHns = 1'000'000;
+    constexpr REFERENCE_TIME kBufferDurationHns = 200'000;
     throw_if_failed(audio_client->Initialize(AUDCLNT_SHAREMODE_SHARED, kFlags,
                                              kBufferDurationHns, 0,
                                              &format.Format, nullptr),
@@ -144,11 +145,21 @@ void WasapiRenderer::run() {
     ScopedMmcss mmcss;
     throw_if_failed(audio_client->Start(), "IAudioClient::Start(render)");
     state_.set_ready();
+    const bool watch_default = selector_.empty() || _wcsicmp(selector_.c_str(), L"default") == 0;
+    auto next_default_check = std::chrono::steady_clock::now() + std::chrono::seconds(1);
 
     while (!stop_requested_) {
       const DWORD wait_result = WaitForSingleObject(event.get(), 250);
       if (wait_result == WAIT_TIMEOUT) continue;
       if (wait_result != WAIT_OBJECT_0) throw std::runtime_error("render event wait failed");
+
+      const auto now = std::chrono::steady_clock::now();
+      if (watch_default && now >= next_default_check) {
+        DeviceInfo current;
+        static_cast<void>(DeviceManager::resolve(eRender, L"default", &current));
+        if (current.id != resolved.id) throw std::runtime_error("default render endpoint changed");
+        next_default_check = now + std::chrono::seconds(1);
+      }
 
       UINT32 padding = 0;
       throw_if_failed(audio_client->GetCurrentPadding(&padding), "IAudioClient::GetCurrentPadding");
@@ -173,4 +184,3 @@ void WasapiRenderer::run() {
 }
 
 }  // namespace echonull
-

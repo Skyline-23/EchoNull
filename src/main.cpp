@@ -1,8 +1,10 @@
 #include <Windows.h>
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cwctype>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -52,10 +54,59 @@ void print_help() {
       << "EchoNull - NvAFX AEC-only Windows audio bridge\n\n"
       << "Usage:\n"
       << "  echonull devices\n"
+      << "  echonull doctor [--config <path>]\n"
       << "  echonull run [--config <path>]\n"
       << "  echonull validate --test-wav <path> [--config <path>] [--output <dir>]\n\n"
       << "The run pipeline is microphone + render loopback -> NvAFX AEC -> VB-CABLE.\n"
       << "Noise removal, AGC, gates, dereverb, and denoising are intentionally absent.\n";
+}
+
+bool endpoint_matches(const std::vector<echonull::AudioEndpoint>& endpoints,
+                      const std::wstring& selector) {
+  std::wstring selector_lower = selector;
+  std::transform(selector_lower.begin(), selector_lower.end(), selector_lower.begin(),
+                 [](const wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+  for (const auto& endpoint : endpoints) {
+    std::wstring name = endpoint.name;
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](const wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+    if (endpoint.id == selector || name.find(selector_lower) != std::wstring::npos ||
+        (selector_lower == L"default" && endpoint.is_default)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+int doctor(const echonull::Config& config) {
+  ComApartment apartment;
+  echonull::WasapiDeviceCatalog catalog;
+  const auto capture = catalog.list(echonull::AudioFlow::capture);
+  const auto render = catalog.list(echonull::AudioFlow::render);
+  bool healthy = true;
+  const auto check = [&healthy](const bool passed, const std::string& name,
+                                const std::string& detail) {
+    std::cout << (passed ? "[pass] " : "[fail] ") << name << ": " << detail << '\n';
+    healthy = healthy && passed;
+  };
+
+#if ECHONULL_HAS_NVAFX
+  check(true, "NvAFX build", "official SDK header and import library linked");
+#else
+  check(false, "NvAFX build", "reconfigure with -DAFX_SDK_ROOT=<SDK path>");
+#endif
+  const auto model = config.resolve_model_path();
+  check(!model.empty() && std::filesystem::exists(model), "AEC model",
+        model.empty() ? "aec_48k.trtpkg was not found" : model.string());
+  check(endpoint_matches(capture, config.devices.microphone), "Microphone",
+        echonull::wide_to_utf8(config.devices.microphone));
+  check(endpoint_matches(render, config.devices.reference), "Loopback reference",
+        echonull::wide_to_utf8(config.devices.reference));
+  check(endpoint_matches(render, config.devices.output), "Virtual cable output",
+        echonull::wide_to_utf8(config.devices.output));
+  check(endpoint_matches(capture, L"NVIDIA Broadcast"), "Broadcast microphone",
+        "required only for the downstream noise-removal stage");
+  return healthy ? 0 : 2;
 }
 
 std::filesystem::path option_value(const int argc, wchar_t** argv,
@@ -230,6 +281,7 @@ int wmain(const int argc, wchar_t** argv) {
 
     const auto config_path = option_value(argc, argv, L"--config", L"config/echonull.ini");
     const auto config = echonull::Config::load(config_path);
+    if (command == L"doctor") return doctor(config);
     if (command == L"run") return run_bridge(config);
     if (command == L"validate") {
       const auto test_wav = option_value(argc, argv, L"--test-wav");

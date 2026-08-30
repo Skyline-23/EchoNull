@@ -7,6 +7,18 @@
 
 #if ECHONULL_HAS_NVAFX
 #include <nvAudioEffects.h>
+
+#if defined(NVAFX_PARAM_NUM_SAMPLES_PER_INPUT_FRAME)
+#define ECHONULL_NVAFX_INPUT_FRAME_PARAM NVAFX_PARAM_NUM_SAMPLES_PER_INPUT_FRAME
+#else
+#define ECHONULL_NVAFX_INPUT_FRAME_PARAM NVAFX_PARAM_NUM_INPUT_SAMPLES_PER_FRAME
+#endif
+
+#if defined(NVAFX_PARAM_NUM_SAMPLES_PER_OUTPUT_FRAME)
+#define ECHONULL_NVAFX_OUTPUT_FRAME_PARAM NVAFX_PARAM_NUM_SAMPLES_PER_OUTPUT_FRAME
+#else
+#define ECHONULL_NVAFX_OUTPUT_FRAME_PARAM NVAFX_PARAM_NUM_OUTPUT_SAMPLES_PER_FRAME
+#endif
 #endif
 
 namespace echonull {
@@ -76,10 +88,10 @@ void NvafxAec::initialize() {
           "NvAFX_GetU32(input_channels)");
     check(NvAFX_GetU32(impl_->handle, NVAFX_PARAM_NUM_OUTPUT_CHANNELS, &current.output_channels),
           "NvAFX_GetU32(output_channels)");
-    check(NvAFX_GetU32(impl_->handle, NVAFX_PARAM_NUM_SAMPLES_PER_INPUT_FRAME,
+    check(NvAFX_GetU32(impl_->handle, ECHONULL_NVAFX_INPUT_FRAME_PARAM,
                        &current.input_frame_samples),
           "NvAFX_GetU32(input_frame_samples)");
-    check(NvAFX_GetU32(impl_->handle, NVAFX_PARAM_NUM_SAMPLES_PER_OUTPUT_FRAME,
+    check(NvAFX_GetU32(impl_->handle, ECHONULL_NVAFX_OUTPUT_FRAME_PARAM,
                        &current.output_frame_samples),
           "NvAFX_GetU32(output_frame_samples)");
 
@@ -152,4 +164,3 @@ AecStatus NvafxAec::status() const {
 }
 
 }  // namespace echonull
-
