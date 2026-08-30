@@ -4,11 +4,11 @@ EchoNull adds NVIDIA NvAFX Acoustic Echo Cancellation (AEC) to an existing
 Windows microphone through Equalizer APO. It does not create another microphone,
 install an audio driver, or require a virtual audio cable.
 
-The only file users import is `EchoNullPlugin.dll`. The playback
-selector, AEC and Noise Removal controls, output meter, and runtime status are
-embedded in the plug-in editor; there is no EchoNull CLI or separate setup
-application. Release builds also carry the NvAFX runtime, selected GPU model,
-and applicable NVIDIA license documents inside that DLL.
+Users download one architecture-specific `EchoNullSetup.exe`. It contains the
+self-contained `EchoNullPlugin.dll`, installs it into Equalizer APO, and adds a
+capture-only configuration block automatically. There is no EchoNull CLI. The
+playback selector, AEC and Noise Removal controls, output meter, and runtime
+status remain embedded in the plug-in editor.
 
 ```text
 selected playback endpoint
@@ -21,6 +21,12 @@ existing microphone endpoint
   -> same microphone endpoint, processed in place
 ```
 
+The installer scopes EchoNull to Equalizer APO's capture pipeline. After
+installation, the resulting configuration appears like this in Configuration
+Editor:
+
+![EchoNull loaded in the Equalizer APO capture stage](docs/images/equalizer-apo-capture-stage.png)
+
 EchoNull intentionally implements playback echo cancellation followed by
 optional NVIDIA Background Noise Removal. Room dereverberation, AGC, gates, and
 Studio Voice are outside the project scope.
@@ -29,6 +35,8 @@ Studio Voice are outside the project scope.
 
 The embedded interface uses a dark GPU-audio-tool visual language with green
 status accents. It contains only controls that belong to the AEC pipeline:
+
+![EchoNull AEC control panel](docs/images/echonull-control-panel.png)
 
 - playback-reference endpoint selector
 - AEC on/off switch and reference-strength slider
@@ -43,9 +51,11 @@ filtered to active endpoints that have Equalizer APO's post-mix processing
 registered and audio enhancements enabled.
 
 Applying a reference stores the selected endpoint ID in the existing VST
-instance's standard `ChunkData`. Equalizer APO's Auto Apply owns that state;
-EchoNull never edits `config.txt`, never creates a second playback instance,
-and therefore adds no processing or latency to the playback pipeline.
+instance's standard `ChunkData`. Equalizer APO's Auto Apply owns that state.
+The setup program edits `config.txt` once to create a marked, capture-only
+EchoNull block and preserves existing ChunkData during repair or upgrade.
+EchoNull never creates a second playback instance and therefore adds no
+processing or latency to the playback pipeline.
 
 The live capture instance in `audiodg.exe` publishes its processed output level
 and runtime state through a read-only telemetry mapping. The editor reads that
@@ -81,17 +91,23 @@ NVIDIA headers.
 - Equalizer APO with post-mix enabled on the reference playback endpoint and
   capture processing enabled on the existing microphone
 
-1. Download `EchoNullPlugin.dll` from the latest GitHub Release.
-2. Put it in `C:\Program Files\EqualizerAPO\VSTPlugins`.
+1. Download the setup file matching the installed GPU from the latest GitHub
+   Release:
+
+   | GPU family | Setup file |
+   | --- | --- |
+   | GeForce RTX 20 | `EchoNullSetup-Turing-RTX20.exe` |
+   | GeForce RTX 30 | `EchoNullSetup-Ampere-RTX30.exe` |
+   | GeForce RTX 40 | `EchoNullSetup-Ada-RTX40.exe` |
+   | GeForce RTX 50 | `EchoNullSetup-Blackwell-RTX50.exe` |
+
+2. Run setup and choose **Install EchoNull**. It copies the self-contained DLL
+   and scopes the plug-in with `If: stage == "capture"`; no manual Stage row is
+   required. The same setup file can repair, update, or remove EchoNull.
 3. Open Equalizer APO Device Selector. Enable capture processing on the existing
    microphone and post-mix processing on playback devices you want listed in
    the selector.
-4. In Configuration Editor, add `Stage: capture`, then import
-   `EchoNullPlugin.dll` with the VST plug-in command. This follows whichever
-   microphone capture pipeline has Equalizer APO enabled; no microphone GUID is
-   stored. Keep this Stage control in the Configuration Editor; without it the
-   global configuration would also run the microphone effect on playback.
-5. Open the embedded panel, choose the playback reference, and press
+4. Open the embedded panel, choose the playback reference, and press
    **APPLY REFERENCE**.
 
 On first activation, the DLL extracts its embedded vendor payload to an
@@ -112,16 +128,15 @@ explicit `NOISE MODEL MISSING` status while AEC continues to work.
 
 ```powershell
 $env:AFX_SDK_ROOT = "C:\path\to\AFX-SDK"
-cmake -S . -B build -A x64 -DAFX_SDK_ROOT="$env:AFX_SDK_ROOT" -DECHONULL_NVAFX_ARCHITECTURE=blackwell
+cmake -S . -B build -A x64 -DAFX_SDK_ROOT="$env:AFX_SDK_ROOT" -DECHONULL_NVAFX_ARCHITECTURES=blackwell
 cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The packer appends the NvAFX DLLs, architecture-specific AEC model, optional
-Denoiser feature, and license files to the PE image. The ready-to-import result
-is copied to the repository root as `EchoNullPlugin.dll`; it is intentionally
-gitignored. Test executables remain in the build directory only and are never
-part of a release.
+The packer appends the NvAFX DLLs, architecture-specific AEC and Denoiser
+models, and license files to the plug-in PE image, then embeds that DLL in
+`EchoNullSetup.exe`. Both local outputs are copied to the repository root and
+intentionally gitignored. Test executables remain in the build directory only.
 
 Builds without the proprietary SDK still compile and run the tests. The AEC
 instance then reports a GPU/model error and safely bypasses processing.
@@ -130,9 +145,10 @@ instance then reports a GPU/model error and safely bypasses processing.
 
 `.github/workflows/ci.yml` builds and tests every push and pull request without
 proprietary assets. `.github/workflows/release.yml` runs for `v*` tags or manual
-dispatch, downloads AFX SDK 2.1.0 plus the 48 kHz Blackwell Denoiser feature
-from NGC, builds the self-contained DLL, runs the tests, writes a SHA-256 file,
-and uploads both files to GitHub Releases.
+dispatch, downloads AFX SDK 2.1.0 plus 48 kHz AEC and Denoiser models for
+Turing, Ampere, Ada, and Blackwell from NGC, runs the tests, and packages four
+separate self-contained setup files. Users download only the model generation
+needed by their GPU. Every setup file receives a SHA-256 sidecar.
 
 Release builds require the repository Actions secret `NGC_CLI_API_KEY`. Keep it
 only in GitHub Secrets; never place it in a workflow, local config committed to
@@ -142,10 +158,10 @@ Git, or command output.
 
 The playback selection and effect controls are serialized by the plug-in as
 VST `ChunkData`, so Auto Apply can persist them as part of the one existing
-capture-stage plug-in line. EchoNull does not create or modify any Equalizer APO
-configuration file. If the playback reference is stopped, unavailable, or the
-NVIDIA model cannot load, the capture instance bypasses AEC rather than muting
-the microphone.
+capture-scoped plug-in line. Setup backs up the original `config.txt`, owns only
+the block between its EchoNull markers, and leaves unrelated filters in place.
+If the playback reference is stopped, unavailable, or the NVIDIA model cannot
+load, the capture instance bypasses AEC rather than muting the microphone.
 
 ## Limitations
 
@@ -163,8 +179,13 @@ the microphone.
 EchoNull is an independent implementation and is not a fork of Equalizer APO.
 It uses NVIDIA's public AFX API and the clean-room, BSD-3-Clause
 [`Xaymar/vst2sdk`](https://github.com/Xaymar/vst2sdk) headers at a pinned revision
-for interoperability with Equalizer APO's legacy plug-in host. See
+for binary interoperability with Equalizer APO's built-in VST 2 host. See
 `THIRD_PARTY_NOTICES.md`.
+
+Stock Equalizer APO 1.4.2 does not provide a VST 3 import path. Replacing this
+narrow VST 2 boundary would require either a modified Equalizer APO fork or a
+separately installed native APO package, so EchoNull deliberately keeps the
+host adapter isolated from its AEC application and infrastructure layers.
 
 Release DLLs embed the selected AFX runtime, models, dependencies, and license
 documents; the source repository does not commit those vendor binaries. They

@@ -24,9 +24,10 @@ class PluginEditor {
   static constexpr int kHeight = 580;
 
   using SettingsHandler = std::function<void(const PluginEditorSettings&)>;
+  using IdleHandler = std::function<void()>;
 
   PluginEditor(HINSTANCE module, PluginEditorSettings settings,
-               SettingsHandler settings_handler);
+               SettingsHandler settings_handler, IdleHandler idle_handler);
   ~PluginEditor();
 
   PluginEditor(const PluginEditor&) = delete;
@@ -57,13 +58,14 @@ class PluginEditor {
   void draw_item(const DRAWITEMSTRUCT& item);
   void draw_toggle(HDC dc, const RECT& rect, bool enabled) const;
   void draw_slider(HDC dc, const RECT& rect, float value, bool enabled) const;
-  void update_slider(int slider, int mouse_x);
+  void update_slider(int slider, int mouse_x, bool commit);
   void notify_settings();
   void set_status(std::wstring status, bool ok);
 
   HINSTANCE module_ = nullptr;
   PluginEditorSettings settings_;
   SettingsHandler settings_handler_;
+  IdleHandler idle_handler_;
   HWND window_ = nullptr;
   HWND playback_combo_ = nullptr;
   HWND refresh_button_ = nullptr;

@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <vector>
 
 #include "application/ports.hpp"
 
@@ -9,7 +10,7 @@ namespace echonull {
 
 class NvafxAec final : public IAecProcessor {
  public:
-  NvafxAec(std::filesystem::path model_path, float intensity,
+  NvafxAec(std::vector<std::filesystem::path> model_paths, float intensity,
            std::uint32_t sample_rate = kSampleRate);
   ~NvafxAec() override;
 

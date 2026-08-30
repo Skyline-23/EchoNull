@@ -35,7 +35,7 @@
 namespace echonull {
 
 struct NvafxAec::Impl {
-  std::filesystem::path model_path;
+  std::vector<std::filesystem::path> model_paths;
   float intensity = 1.0F;
   std::uint32_t sample_rate = kSampleRate;
   mutable std::mutex mutex;
@@ -45,10 +45,11 @@ struct NvafxAec::Impl {
 #endif
 };
 
-NvafxAec::NvafxAec(std::filesystem::path model_path, const float intensity,
+NvafxAec::NvafxAec(std::vector<std::filesystem::path> model_paths,
+                   const float intensity,
                    const std::uint32_t sample_rate)
     : impl_(std::make_unique<Impl>()) {
-  impl_->model_path = std::move(model_path);
+  impl_->model_paths = std::move(model_paths);
   impl_->intensity = intensity;
   impl_->sample_rate = sample_rate;
 }
@@ -73,14 +74,15 @@ void NvafxAec::initialize() {
     }
   };
 
-  try {
+  std::string last_error = "no compatible NvAFX AEC model was found";
+  for (const auto& model_path : impl_->model_paths) try {
     auto& api = NvafxApi::instance();
-    if (impl_->model_path.empty() || !std::filesystem::exists(impl_->model_path)) {
-      throw std::runtime_error("NvAFX AEC model not found: " + impl_->model_path.string());
+    if (model_path.empty() || !std::filesystem::exists(model_path)) {
+      throw std::runtime_error("NvAFX AEC model not found: " + model_path.string());
     }
     check(api.create_effect(ECHONULL_NVAFX_AEC_EFFECT, &impl_->handle),
           "NvAFX_CreateEffect(aec)");
-    const auto model_utf8 = impl_->model_path.u8string();
+    const auto model_utf8 = model_path.u8string();
     const auto* model = reinterpret_cast<const char*>(model_utf8.c_str());
     check(api.set_string(impl_->handle, NVAFX_PARAM_MODEL_PATH, model),
           "NvAFX_SetString(model_path)");
@@ -117,16 +119,18 @@ void NvafxAec::initialize() {
     current.ready = true;
     std::scoped_lock lock(impl_->mutex);
     impl_->status = current;
+    return;
   } catch (const std::exception& error) {
+    last_error = error.what();
     if (impl_->handle != nullptr) {
       NvafxApi::instance().destroy_effect(impl_->handle);
       impl_->handle = nullptr;
     }
-    std::scoped_lock lock(impl_->mutex);
-    impl_->status = {};
-    impl_->status.error = error.what();
-    throw;
   }
+  std::scoped_lock lock(impl_->mutex);
+  impl_->status = {};
+  impl_->status.error = last_error;
+  throw std::runtime_error(last_error);
 #endif
 }
 

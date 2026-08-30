@@ -9,6 +9,7 @@
 #include <iterator>
 #include <string>
 
+#include "infrastructure/equalizer_apo_config.hpp"
 #include "infrastructure/windows/device_manager.hpp"
 
 namespace echonull {
@@ -133,22 +134,9 @@ bool EqualizerApoIntegration::capture_stage_guard_present() {
                       std::ios::binary);
   if (!input) return false;
 
-  bool capture_only = false;
-  bool found_plugin = false;
-  std::string line;
-  while (std::getline(input, line)) {
-    const std::string normalized = lowercase_trimmed(line);
-    if (normalized.starts_with("stage:")) {
-      const std::string stages = lowercase_trimmed(normalized.substr(6));
-      capture_only = stages == "capture";
-    } else if (!normalized.starts_with('#') &&
-               normalized.starts_with("vstplugin:") &&
-               normalized.find("echonullplugin.dll") != std::string::npos) {
-      found_plugin = true;
-      if (!capture_only) return false;
-    }
-  }
-  return found_plugin;
+  return has_capture_scoped_echonull(
+      std::string(std::istreambuf_iterator<char>(input),
+                  std::istreambuf_iterator<char>()));
 }
 
 }  // namespace echonull

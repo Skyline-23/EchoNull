@@ -8,6 +8,7 @@
 #include "application/delay_estimator.hpp"
 #include "application/streaming_resampler.hpp"
 #include "application/timestamped_audio_buffer.hpp"
+#include "infrastructure/equalizer_apo_config.hpp"
 #include "infrastructure/windows/telemetry_bus.hpp"
 
 namespace {
@@ -111,6 +112,44 @@ void test_telemetry_bus_roundtrip() {
   require(actual->runtime_state == expected.runtime_state &&
               actual->noise_state == expected.noise_state,
           "telemetry bus changed the runtime state");
+
+  auto stale = expected;
+  stale.timestamp_hns = now_hns - 30'000'000;
+  writer.publish(stale);
+  require(!reader.read_latest().has_value(),
+          "telemetry reader accepted a stale audio-engine snapshot");
+  writer.publish(expected);
+  require(reader.read_latest().has_value(),
+          "telemetry reader did not reconnect after a stale mapping");
+}
+
+void test_equalizer_apo_capture_scope() {
+  const std::string original =
+      "Preamp: -3 dB\r\n"
+      "VSTPlugin: Library EchoNullPlugin.dll ChunkData \"saved\"\r\n"
+      "Filter: ON HP Fc 80 Hz\r\n";
+  const auto installed = echonull::install_echonull_capture_scope(original);
+  require(echonull::has_capture_scoped_echonull(installed),
+          "installer did not capture-scope EchoNull");
+  require(installed.find("ChunkData \"saved\"") != std::string::npos,
+          "installer discarded EchoNull VST state");
+  require(installed.find("If: stage == \"capture\"") != std::string::npos &&
+              installed.find("EndIf:") != std::string::npos,
+          "installer did not close the capture condition");
+  require(echonull::install_echonull_capture_scope(installed) == installed,
+          "installer capture block is not idempotent");
+  const auto removed = echonull::remove_echonull_capture_scope(installed);
+  require(removed.find("EchoNullPlugin.dll") == std::string::npos,
+          "uninstaller left the owned EchoNull line behind");
+  require(removed.find("Filter: ON HP Fc 80 Hz") != std::string::npos,
+          "uninstaller removed an unrelated filter");
+
+  require(!echonull::has_capture_scoped_echonull(
+              "VSTPlugin: Library EchoNullPlugin.dll\n"),
+          "unguarded EchoNull configuration was accepted");
+  require(echonull::has_capture_scoped_echonull(
+              "Stage: capture\nVSTPlugin: Library EchoNullPlugin.dll\n"),
+          "legacy capture Stage configuration was rejected");
 }
 
 }  // namespace
@@ -121,6 +160,7 @@ int main() {
     test_delay_estimator();
     test_streaming_resampler_is_chunk_invariant();
     test_telemetry_bus_roundtrip();
+    test_equalizer_apo_capture_scope();
     std::cout << "All EchoNull core tests passed.\n";
     return 0;
   } catch (const std::exception& error) {

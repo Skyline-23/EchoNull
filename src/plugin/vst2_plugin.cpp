@@ -207,6 +207,22 @@ std::pair<std::wstring, bool> runtime_status(
       static_cast<echonull::PluginErrorReason>(telemetry.noise_error));
 }
 
+void refresh_editor(EffectInstance& value) {
+  if (!value.editor) return;
+  if (const auto telemetry = value.telemetry_reader.read_latest()) {
+    const auto [status, ok] = runtime_status(value, *telemetry);
+    value.editor->idle(telemetry->output_level, status, ok);
+    return;
+  }
+  const auto [status, ok] = runtime_status(value);
+  const bool audio_engine_instance = echonull::is_windows_audio_engine_process();
+  value.editor->idle(value.processor.output_level(),
+                     audio_engine_instance && value.started
+                         ? status
+                         : L"AUDIO ENGINE OFFLINE",
+                     audio_engine_instance && value.started && ok);
+}
+
 echonull::PluginEditorSettings editor_settings(const EffectInstance& value) {
   return echonull::PluginEditorSettings{
       value.aec_enabled >= 0.5F, value.aec_strength,
@@ -225,18 +241,20 @@ void apply_editor_settings(EffectInstance& value,
       std::clamp(settings.noise_strength, 0.0F, 1.0F)};
   float* destinations[4] = {&value.aec_enabled, &value.aec_strength,
                             &value.noise_enabled, &value.noise_strength};
+  bool changed[4]{};
   for (int offset = 0; offset < 4; ++offset) {
     if (*destinations[offset] == parameters[offset]) continue;
+    changed[offset] = true;
     *destinations[offset] = parameters[offset];
     if (value.host != nullptr) {
       value.host(&value.effect, VST_HOST_OPCODE_AUTOMATE, offset + 1, 0,
                  nullptr, parameters[offset]);
     }
   }
-  value.processor.set_aec_enabled(value.aec_enabled >= 0.5F);
-  value.processor.set_aec_strength(value.aec_strength);
-  value.processor.set_noise_enabled(value.noise_enabled >= 0.5F);
-  value.processor.set_noise_strength(value.noise_strength);
+  if (changed[0]) value.processor.set_aec_enabled(value.aec_enabled >= 0.5F);
+  if (changed[1]) value.processor.set_aec_strength(value.aec_strength);
+  if (changed[2]) value.processor.set_noise_enabled(value.noise_enabled >= 0.5F);
+  if (changed[3]) value.processor.set_noise_strength(value.noise_strength);
   if (endpoint_changed) {
     value.playback_endpoint_id = settings.playback_endpoint_id;
     if (echonull::is_windows_audio_engine_process()) {
@@ -310,6 +328,9 @@ intptr_t VST_FUNCTION_INTERFACE control(vst_effect_t* effect, const int32_t opco
             g_module, editor_settings(*self),
             [self](const echonull::PluginEditorSettings& settings) {
               apply_editor_settings(*self, settings);
+            },
+            [self] {
+              refresh_editor(*self);
             });
       }
       return self->editor->open(static_cast<HWND>(pointer)) ? 1 : 0;
@@ -317,21 +338,7 @@ intptr_t VST_FUNCTION_INTERFACE control(vst_effect_t* effect, const int32_t opco
       self->editor.reset();
       return 0;
     case VST_EFFECT_OPCODE_EDITOR_KEEP_ALIVE:
-      if (self->editor) {
-        if (const auto telemetry = self->telemetry_reader.read_latest()) {
-          const auto [status, ok] = runtime_status(*self, *telemetry);
-          self->editor->idle(telemetry->output_level, status, ok);
-        } else {
-          const auto [status, ok] = runtime_status(*self);
-          const bool audio_engine_instance =
-              echonull::is_windows_audio_engine_process();
-          self->editor->idle(self->processor.output_level(),
-                             audio_engine_instance && self->started
-                                 ? status
-                                 : L"AUDIO ENGINE OFFLINE",
-                             audio_engine_instance && self->started && ok);
-        }
-      }
+      refresh_editor(*self);
       return 0;
     case VST_EFFECT_OPCODE_PARAM_NAME:
       if (index == 0) copy_text(pointer, VST_BUFFER_SIZE_PARAM_NAME, "State");

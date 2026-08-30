@@ -159,6 +159,10 @@ std::optional<TelemetrySnapshot> TelemetryBusReader::read_latest() {
       return snapshot;
     }
   }
+  // audiodg.exe is recreated whenever Equalizer APO applies a configuration.
+  // Drop the old mapping so the editor reconnects to the new audio-engine
+  // instance on its next timer tick instead of displaying a frozen snapshot.
+  close();
   return std::nullopt;
 }
 

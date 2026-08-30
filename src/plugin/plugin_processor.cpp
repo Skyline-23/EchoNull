@@ -198,14 +198,14 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
       }
     }
 
-    std::filesystem::path aec_model;
-    std::filesystem::path noise_model;
+    std::vector<std::filesystem::path> aec_models;
+    std::vector<std::filesystem::path> noise_models;
     bool runtime_ready = false;
 #if ECHONULL_HAS_NVAFX
     try {
       const auto packaged = PackagedRuntime::prepare(plugin_path_);
-      aec_model = packaged.aec_model;
-      noise_model = packaged.noise_model;
+      aec_models = packaged.aec_models;
+      noise_models = packaged.noise_models;
       runtime_ready = true;
     } catch (...) {
       runtime_ready = false;
@@ -220,12 +220,12 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
         kSampleRate, impl_->delay_ms, impl_->max_delay_ms);
     aec_error_reason_.store(
         !runtime_ready ? PluginErrorReason::runtime_or_gpu
-        : std::filesystem::is_regular_file(aec_model)
+        : !aec_models.empty()
             ? PluginErrorReason::none
             : PluginErrorReason::model_missing,
         std::memory_order_relaxed);
     impl_->aec = std::make_unique<NvafxAec>(
-        aec_model,
+        aec_models,
         aec_strength_.load(std::memory_order_relaxed), kSampleRate);
     try {
       impl_->aec->initialize();
@@ -249,12 +249,12 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
 
     noise_error_reason_.store(
         !runtime_ready ? PluginErrorReason::runtime_or_gpu
-        : std::filesystem::is_regular_file(noise_model)
+        : !noise_models.empty()
             ? PluginErrorReason::none
             : PluginErrorReason::model_missing,
         std::memory_order_relaxed);
     impl_->denoiser = std::make_unique<NvafxDenoiser>(
-        noise_model,
+        noise_models,
         noise_strength_.load(std::memory_order_relaxed), kSampleRate);
     try {
       impl_->denoiser->initialize();
@@ -357,8 +357,11 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
   copy_input(inputs, outputs, sample_count, channel_count);
   const auto update_meter = [&] {
     const float current = output_level_.load(std::memory_order_relaxed);
-    const float level =
-        std::max(output_peak(outputs, sample_count, channel_count), current * 0.82F);
+    const float peak = output_peak(outputs, sample_count, channel_count);
+    const float block_seconds = static_cast<float>(sample_count) /
+                                static_cast<float>(std::max(1U, sample_rate_));
+    const float decay = std::exp(-block_seconds / 0.35F);
+    const float level = peak >= current ? peak : current * decay;
     output_level_.store(level, std::memory_order_relaxed);
     if (impl_->telemetry_writer) {
       impl_->telemetry_writer->publish(TelemetrySnapshot{

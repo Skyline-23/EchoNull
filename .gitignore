@@ -2,6 +2,7 @@
 /build-*/
 /out/
 /EchoNullPlugin.dll
+/EchoNullSetup.exe
 /.vs/
 /*.user
 /*.suo

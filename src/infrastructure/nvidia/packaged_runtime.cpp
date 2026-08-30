@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iomanip>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -122,6 +123,70 @@ bool correct_size(const std::filesystem::path& path, const std::uint64_t size) {
          std::filesystem::file_size(path, error) == size && !error;
 }
 
+std::optional<std::string> preferred_gpu_architecture() {
+  const HMODULE cuda = LoadLibraryW(L"nvcuda.dll");
+  if (cuda == nullptr) return std::nullopt;
+  using CuInit = int(WINAPI*)(unsigned int);
+  using CuDeviceGetCount = int(WINAPI*)(int*);
+  using CuDeviceGet = int(WINAPI*)(int*, int);
+  using CuDeviceGetAttribute = int(WINAPI*)(int*, int, int);
+  const auto init = reinterpret_cast<CuInit>(GetProcAddress(cuda, "cuInit"));
+  const auto get_count = reinterpret_cast<CuDeviceGetCount>(
+      GetProcAddress(cuda, "cuDeviceGetCount"));
+  const auto get_device = reinterpret_cast<CuDeviceGet>(
+      GetProcAddress(cuda, "cuDeviceGet"));
+  const auto get_attribute = reinterpret_cast<CuDeviceGetAttribute>(
+      GetProcAddress(cuda, "cuDeviceGetAttribute"));
+  if (init == nullptr || get_count == nullptr || get_device == nullptr ||
+      get_attribute == nullptr || init(0) != 0) {
+    FreeLibrary(cuda);
+    return std::nullopt;
+  }
+  constexpr int kComputeCapabilityMajor = 75;
+  constexpr int kComputeCapabilityMinor = 76;
+  int count = 0;
+  int best_major = 0;
+  int best_minor = 0;
+  if (get_count(&count) == 0) {
+    for (int ordinal = 0; ordinal < count; ++ordinal) {
+      int device = 0;
+      int major = 0;
+      int minor = 0;
+      if (get_device(&device, ordinal) == 0 &&
+          get_attribute(&major, kComputeCapabilityMajor, device) == 0 &&
+          get_attribute(&minor, kComputeCapabilityMinor, device) == 0 &&
+          std::pair{major, minor} > std::pair{best_major, best_minor}) {
+        best_major = major;
+        best_minor = minor;
+      }
+    }
+  }
+  FreeLibrary(cuda);
+  if (best_major >= 10) return "blackwell";
+  if (best_major == 8 && best_minor >= 9) return "ada";
+  if (best_major == 8) return "ampere";
+  if (best_major == 7 && best_minor >= 5) return "turing";
+  return std::nullopt;
+}
+
+int model_preference(const std::filesystem::path& path,
+                     const std::optional<std::string>& preferred) {
+  const auto name = path.filename().string();
+  if (preferred && name.find(*preferred) != std::string::npos) return 0;
+  if (name.find("blackwell") != std::string::npos) return 1;
+  if (name.find("ada") != std::string::npos) return 2;
+  if (name.find("ampere") != std::string::npos) return 3;
+  if (name.find("turing") != std::string::npos) return 4;
+  return 5;
+}
+
+void sort_models(std::vector<std::filesystem::path>& models) {
+  const auto preferred = preferred_gpu_architecture();
+  std::ranges::stable_sort(models, [&](const auto& left, const auto& right) {
+    return model_preference(left, preferred) < model_preference(right, preferred);
+  });
+}
+
 void extract_asset(std::ifstream& input, const Asset& asset,
                    const std::filesystem::path& destination) {
   if (correct_size(destination, asset.size)) return;
@@ -181,13 +246,17 @@ PackagedRuntimePaths PackagedRuntime::prepare(
   for (const auto& asset : assets) {
     const auto destination = directory / utf8_name(asset.name);
     extract_asset(input, asset, destination);
-    if (_stricmp(asset.name.c_str(), "aec_48k.trtpkg") == 0) {
-      paths.aec_model = destination;
-    } else if (_stricmp(asset.name.c_str(), "denoiser_48k.trtpkg") == 0) {
-      paths.noise_model = destination;
+    if (asset.name.starts_with("aec_48k") &&
+        asset.name.ends_with(".trtpkg")) {
+      paths.aec_models.push_back(destination);
+    } else if (asset.name.starts_with("denoiser_48k") &&
+               asset.name.ends_with(".trtpkg")) {
+      paths.noise_models.push_back(destination);
     }
   }
-  if (paths.aec_model.empty()) {
+  sort_models(paths.aec_models);
+  sort_models(paths.noise_models);
+  if (paths.aec_models.empty()) {
     throw std::runtime_error("embedded NvAFX AEC model is missing");
   }
 #if ECHONULL_HAS_NVAFX

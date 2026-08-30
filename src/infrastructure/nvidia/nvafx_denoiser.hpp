@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <vector>
 #include <span>
 #include <string>
 
@@ -23,7 +24,7 @@ struct DenoiserStatus {
 
 class NvafxDenoiser {
  public:
-  NvafxDenoiser(std::filesystem::path model_path, float intensity,
+  NvafxDenoiser(std::vector<std::filesystem::path> model_paths, float intensity,
                 std::uint32_t sample_rate = kSampleRate);
   ~NvafxDenoiser();
 

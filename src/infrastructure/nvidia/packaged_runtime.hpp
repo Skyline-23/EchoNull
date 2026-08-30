@@ -1,13 +1,14 @@
 #pragma once
 
 #include <filesystem>
+#include <vector>
 
 namespace echonull {
 
 struct PackagedRuntimePaths {
   std::filesystem::path directory;
-  std::filesystem::path aec_model;
-  std::filesystem::path noise_model;
+  std::vector<std::filesystem::path> aec_models;
+  std::vector<std::filesystem::path> noise_models;
 };
 
 class PackagedRuntime {

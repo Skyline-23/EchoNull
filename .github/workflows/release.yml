@@ -97,23 +97,13 @@ jobs:
             Authorization = "Bearer $env:NGC_CLI_API_KEY"
             Accept = "application/json"
           }
-          $modelRoot = Join-Path $env:AFX_SDK_ROOT `
-            "features/nvafxdenoiser/models/blackwell"
           $runtimeRoot = Join-Path $env:AFX_SDK_ROOT `
             "features/nvafxdenoiser/bin"
-          $aecModelRoot = Join-Path $env:AFX_SDK_ROOT `
-            "features/nvafxaec/models/blackwell"
           $aecRuntimeRoot = Join-Path $env:AFX_SDK_ROOT `
             "features/nvafxaec/bin"
           $aecLicenseRoot = Join-Path $env:AFX_SDK_ROOT `
             "features/nvafxaec/license"
           $downloads = @(
-            @{
-              Effect = "aec"
-              Variant = "2.1.0-48k-blackwell"
-              Names = @("aec_48k.trtpkg", "aec_48k.trtpkg.md5")
-              Destination = $aecModelRoot
-            },
             @{
               Effect = "aec"
               Variant = "2.1.0-dynamic-library"
@@ -131,17 +121,28 @@ jobs:
             },
             @{
               Effect = "denoiser"
-              Variant = "2.1.0-48k-blackwell"
-              Names = @("denoiser_48k.trtpkg", "denoiser_48k.trtpkg.md5")
-              Destination = $modelRoot
-            },
-            @{
-              Effect = "denoiser"
               Variant = "2.1.0-dynamic-library"
               Names = @("nvafxdenoiser.dll", "nvafxdenoiser.dll.md5")
               Destination = $runtimeRoot
             }
           )
+          $architectures = @("turing", "ampere", "ada", "blackwell")
+          foreach ($architecture in $architectures) {
+            $downloads += @{
+              Effect = "aec"
+              Variant = "2.1.0-48k-$architecture"
+              Names = @("aec_48k.trtpkg", "aec_48k.trtpkg.md5")
+              Destination = Join-Path $env:AFX_SDK_ROOT `
+                "features/nvafxaec/models/$architecture"
+            }
+            $downloads += @{
+              Effect = "denoiser"
+              Variant = "2.1.0-48k-$architecture"
+              Names = @("denoiser_48k.trtpkg", "denoiser_48k.trtpkg.md5")
+              Destination = Join-Path $env:AFX_SDK_ROOT `
+                "features/nvafxdenoiser/models/$architecture"
+            }
+          }
           $modelRootUri = "https://api.ngc.nvidia.com/v2/org/nvidia/team/maxine/models"
           foreach ($download in $downloads) {
             New-Item -ItemType Directory `
@@ -160,17 +161,20 @@ jobs:
             }
           }
 
-          $model = Join-Path $env:AFX_SDK_ROOT `
-            "features/nvafxdenoiser/models/blackwell/denoiser_48k.trtpkg"
           $runtime = Join-Path $env:AFX_SDK_ROOT `
             "features/nvafxdenoiser/bin/nvafxdenoiser.dll"
-          $aecModel = Join-Path $env:AFX_SDK_ROOT `
-            "features/nvafxaec/models/blackwell/aec_48k.trtpkg"
           $aecRuntime = Join-Path $env:AFX_SDK_ROOT `
             "features/nvafxaec/bin/nvafxaec.dll"
           $aecLicense = Join-Path $env:AFX_SDK_ROOT `
             "features/nvafxaec/license/NVIDIA-Models-Community-License-2025-04-15.pdf"
-          foreach ($file in @($aecModel, $aecRuntime, $aecLicense, $model, $runtime)) {
+          $requiredFiles = @($aecRuntime, $aecLicense, $runtime)
+          foreach ($architecture in $architectures) {
+            $requiredFiles += Join-Path $env:AFX_SDK_ROOT `
+              "features/nvafxaec/models/$architecture/aec_48k.trtpkg"
+            $requiredFiles += Join-Path $env:AFX_SDK_ROOT `
+              "features/nvafxdenoiser/models/$architecture/denoiser_48k.trtpkg"
+          }
+          foreach ($file in $requiredFiles) {
             $checksum = "$file.md5"
             if (-not (Test-Path -LiteralPath $file) -or
                 -not (Test-Path -LiteralPath $checksum)) {
@@ -190,22 +194,95 @@ jobs:
             -DAFX_SDK_ROOT="$env:AFX_SDK_ROOT" `
             -DECHONULL_BUILD_TESTS=ON `
             -DECHONULL_EMBED_NVAFX=ON `
-            -DECHONULL_NVAFX_ARCHITECTURE=blackwell
+            -DECHONULL_PACKAGE_DEFAULT_ARTIFACTS=OFF `
+            -DECHONULL_NVAFX_ARCHITECTURES=turing
 
       - name: Build and test
         shell: pwsh
         run: |
           cmake --build build --config Release --parallel
           ctest --test-dir build -C Release --output-on-failure
-          if (-not (Test-Path -LiteralPath EchoNullPlugin.dll)) {
-            throw "Self-contained EchoNullPlugin.dll was not produced."
+          if (-not (Test-Path -LiteralPath build/Release/EchoNullPlugin.dll)) {
+            throw "The release plug-in binary was not produced."
+          }
+          if (-not (Test-Path -LiteralPath build/Release/EchoNullSetupStub.exe)) {
+            throw "The release setup stub was not produced."
           }
 
-      - name: Write checksum
+      - name: Build architecture-specific installers
         shell: pwsh
         run: |
-          $hash = (Get-FileHash -LiteralPath EchoNullPlugin.dll -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash *EchoNullPlugin.dll" | Set-Content -LiteralPath EchoNullPlugin.dll.sha256 -NoNewline
+          $packer = "build/Release/echonull_bundle_packer.exe"
+          $pluginBase = "build/Release/EchoNullPlugin.dll"
+          $setupStub = "build/Release/EchoNullSetupStub.exe"
+          foreach ($file in @($packer, $pluginBase, $setupStub)) {
+            if (-not (Test-Path -LiteralPath $file)) {
+              throw "A release packaging tool or base binary is missing: $file"
+            }
+          }
+
+          $runtimeFiles = @(
+            Get-ChildItem -LiteralPath (Join-Path $env:AFX_SDK_ROOT "bin") `
+              -Recurse -Filter *.dll -File
+            Get-ChildItem -LiteralPath (Join-Path $env:AFX_SDK_ROOT "features") `
+              -Recurse -Filter *.dll -File |
+              Where-Object { $_.DirectoryName -like "*\\bin" }
+          )
+          $licenses = @(
+            Join-Path $env:AFX_SDK_ROOT `
+              "license/NVIDIA-Software-License-Agreement-2025.05.05.pdf"
+            Join-Path $env:AFX_SDK_ROOT `
+              "license/product-specific-terms-for-nvidia-ai-products-2025.05.05.pdf"
+            Join-Path $env:AFX_SDK_ROOT `
+              "features/nvafxaec/license/NVIDIA-Models-Community-License-2025-04-15.pdf"
+          ) | Where-Object { Test-Path -LiteralPath $_ }
+          $variants = [ordered]@{
+            "Turing-RTX20" = "turing"
+            "Ampere-RTX30" = "ampere"
+            "Ada-RTX40" = "ada"
+            "Blackwell-RTX50" = "blackwell"
+          }
+
+          foreach ($variant in $variants.GetEnumerator()) {
+            $label = $variant.Key
+            $architecture = $variant.Value
+            $plugin = "EchoNullPlugin-$label.dll"
+            $setup = "EchoNullSetup-$label.exe"
+            Copy-Item -LiteralPath $pluginBase -Destination $plugin -Force
+
+            $arguments = @($plugin)
+            foreach ($runtime in $runtimeFiles) {
+              $arguments += @($runtime.Name, $runtime.FullName)
+            }
+            $arguments += @(
+              "aec_48k_$architecture.trtpkg",
+              (Join-Path $env:AFX_SDK_ROOT `
+                "features/nvafxaec/models/$architecture/aec_48k.trtpkg"),
+              "denoiser_48k_$architecture.trtpkg",
+              (Join-Path $env:AFX_SDK_ROOT `
+                "features/nvafxdenoiser/models/$architecture/denoiser_48k.trtpkg")
+            )
+            foreach ($license in $licenses) {
+              $arguments += @((Split-Path -Leaf $license), $license)
+            }
+            & $packer @arguments
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to package the $architecture plug-in."
+            }
+            & "build/Release/echonull_plugin_smoke_tests.exe" $plugin
+            if ($LASTEXITCODE -ne 0) {
+              throw "The $architecture plug-in failed its smoke test."
+            }
+
+            Copy-Item -LiteralPath $setupStub -Destination $setup -Force
+            & $packer $setup "EchoNullPlugin.dll" $plugin
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to package the $architecture installer."
+            }
+            Remove-Item -LiteralPath $plugin -Force
+            $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash *$setup" | Set-Content -LiteralPath "$setup.sha256" -NoNewline
+          }
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -214,5 +291,5 @@ jobs:
           name: EchoNull ${{ env.RELEASE_TAG }}
           generate_release_notes: true
           files: |
-            EchoNullPlugin.dll
-            EchoNullPlugin.dll.sha256
+            EchoNullSetup-*.exe
+            EchoNullSetup-*.exe.sha256

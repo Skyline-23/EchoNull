@@ -21,6 +21,7 @@ constexpr wchar_t kWindowClass[] = L"EchoNullPluginEditor";
 constexpr int kPlaybackCombo = 1001;
 constexpr int kRefreshButton = 1002;
 constexpr int kApplyButton = 1003;
+constexpr UINT_PTR kTelemetryTimer = 1004;
 
 constexpr COLORREF kBackground = RGB(24, 24, 24);
 constexpr COLORREF kControl = RGB(37, 37, 37);
@@ -68,10 +69,12 @@ void draw_label(HDC dc, const wchar_t* text, RECT rect, HFONT font,
 }  // namespace
 
 PluginEditor::PluginEditor(HINSTANCE module, PluginEditorSettings settings,
-                           SettingsHandler settings_handler)
+                           SettingsHandler settings_handler,
+                           IdleHandler idle_handler)
     : module_(module),
       settings_(settings),
-      settings_handler_(std::move(settings_handler)) {}
+      settings_handler_(std::move(settings_handler)),
+      idle_handler_(std::move(idle_handler)) {}
 
 PluginEditor::~PluginEditor() { close(); }
 
@@ -148,6 +151,7 @@ bool PluginEditor::open(HWND parent) {
   small_font_ = create_font(14, FW_SEMIBOLD);
   create_controls();
   refresh();
+  SetTimer(window_, kTelemetryTimer, 50, nullptr);
   ShowWindow(window_, SW_SHOW);
   UpdateWindow(window_);
   if (previous_dpi != nullptr) SetThreadDpiAwarenessContext(previous_dpi);
@@ -156,6 +160,7 @@ bool PluginEditor::open(HWND parent) {
 
 void PluginEditor::close() noexcept {
   if (window_ != nullptr) {
+    KillTimer(window_, kTelemetryTimer);
     DestroyWindow(window_);
     window_ = nullptr;
   }
@@ -181,7 +186,7 @@ void PluginEditor::idle(const float output_level,
                         const std::wstring& runtime_status,
                         const bool runtime_ok) {
   const float level = std::clamp(output_level, 0.0F, 1.0F);
-  if (std::abs(level - output_level_) > 0.01F ||
+  if (std::abs(level - output_level_) > 0.001F ||
       runtime_status != runtime_status_ || runtime_ok != runtime_ok_) {
     output_level_ = level;
     runtime_status_ = runtime_status;
@@ -250,7 +255,8 @@ void PluginEditor::refresh() {
       SendMessageW(playback_combo_, CB_SETCURSEL,
                    selected_item == CB_ERR ? 0 : selected_item, 0);
       EnableWindow(apply_button_, FALSE);
-      set_status(L"Add Stage: capture above EchoNull, then press Refresh.", false);
+      set_status(L"Run EchoNullSetup to install capture scope, then press Refresh.",
+                 false);
     } else {
       SendMessageW(playback_combo_, CB_SETCURSEL,
                    selected_item == CB_ERR ? 0 : selected_item, 0);
@@ -364,7 +370,14 @@ void PluginEditor::paint() {
   constexpr int meter_blocks = 26;
   constexpr int gap = 5;
   constexpr int block_width = 19;
-  const int lit = static_cast<int>(std::ceil(output_level_ * meter_blocks));
+  const float meter_level = output_level_ <= 0.001F
+                                ? 0.0F
+                                : std::clamp(
+                                      (20.0F * std::log10(output_level_) +
+                                       60.0F) /
+                                          60.0F,
+                                      0.0F, 1.0F);
+  const int lit = static_cast<int>(std::ceil(meter_level * meter_blocks));
   for (int index = 0; index < meter_blocks; ++index) {
     RECT block = scaled_rect(28 + index * (block_width + gap), 490,
                              28 + index * (block_width + gap) + block_width, 502);
@@ -426,7 +439,8 @@ void PluginEditor::draw_item(const DRAWITEMSTRUCT& item) {
   }
 }
 
-void PluginEditor::update_slider(const int slider, const int mouse_x) {
+void PluginEditor::update_slider(const int slider, const int mouse_x,
+                                 const bool commit) {
   const RECT rect = slider == 1 ? aec_slider_rect() : noise_slider_rect();
   const float value = std::clamp(
       static_cast<float>(mouse_x - rect.left) /
@@ -434,7 +448,7 @@ void PluginEditor::update_slider(const int slider, const int mouse_x) {
       0.0F, 1.0F);
   if (slider == 1) settings_.aec_strength = value;
   else settings_.noise_strength = value;
-  notify_settings();
+  if (commit) notify_settings();
   InvalidateRect(window_, &rect, FALSE);
 }
 
@@ -490,6 +504,9 @@ LRESULT PluginEditor::handle_message(const UINT message, const WPARAM wparam,
         }
       }
       return 0;
+    case WM_TIMER:
+      if (wparam == kTelemetryTimer && idle_handler_) idle_handler_();
+      return 0;
     case WM_LBUTTONDOWN: {
       const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
       RECT rect = aec_toggle_rect();
@@ -512,18 +529,18 @@ LRESULT PluginEditor::handle_message(const UINT message, const WPARAM wparam,
       if (settings_.noise_enabled && PtInRect(&rect, point)) dragging_slider_ = 2;
       if (dragging_slider_ != 0) {
         SetCapture(window_);
-        update_slider(dragging_slider_, point.x);
+        update_slider(dragging_slider_, point.x, false);
       }
       return 0;
     }
     case WM_MOUSEMOVE:
       if (dragging_slider_ != 0 && (wparam & MK_LBUTTON) != 0) {
-        update_slider(dragging_slider_, GET_X_LPARAM(lparam));
+        update_slider(dragging_slider_, GET_X_LPARAM(lparam), false);
       }
       return 0;
     case WM_LBUTTONUP:
       if (dragging_slider_ != 0) {
-        update_slider(dragging_slider_, GET_X_LPARAM(lparam));
+        update_slider(dragging_slider_, GET_X_LPARAM(lparam), true);
         dragging_slider_ = 0;
         ReleaseCapture();
       }

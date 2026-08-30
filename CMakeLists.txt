@@ -15,9 +15,11 @@ endif()
 
 option(ECHONULL_BUILD_TESTS "Build EchoNull unit tests" ON)
 option(ECHONULL_EMBED_NVAFX "Pack the NvAFX runtime and model into EchoNullPlugin.dll" ON)
+option(ECHONULL_PACKAGE_DEFAULT_ARTIFACTS
+  "Produce the default root plug-in and setup package" ON)
 set(AFX_SDK_ROOT "" CACHE PATH "Root of the NVIDIA Audio Effects SDK")
-set(ECHONULL_NVAFX_ARCHITECTURE "blackwell" CACHE STRING
-  "NvAFX model architecture to embed (turing, ampere, ada, or blackwell)")
+set(ECHONULL_NVAFX_ARCHITECTURES "turing;ampere;ada;blackwell" CACHE STRING
+  "NvAFX model architectures to embed")
 
 include(FetchContent)
 FetchContent_Declare(vst2sdk
@@ -65,6 +67,7 @@ if(MSVC)
 endif()
 
 add_library(echonull_infrastructure
+  src/infrastructure/equalizer_apo_config.cpp
   src/infrastructure/nvidia/nvafx_api.cpp
   src/infrastructure/nvidia/nvafx_aec.cpp
   src/infrastructure/nvidia/nvafx_denoiser.cpp
@@ -96,10 +99,24 @@ if(ECHONULL_HAS_NVAFX AND ECHONULL_EMBED_NVAFX)
   file(GLOB_RECURSE ECHONULL_NVAFX_RUNTIME_DLLS CONFIGURE_DEPENDS
     "${AFX_SDK_ROOT}/bin/*.dll"
     "${AFX_SDK_ROOT}/features/nvafx*/bin/*.dll")
-  set(ECHONULL_AEC_MODEL
-    "${AFX_SDK_ROOT}/features/nvafxaec/models/${ECHONULL_NVAFX_ARCHITECTURE}/aec_48k.trtpkg")
-  set(ECHONULL_NOISE_MODEL
-    "${AFX_SDK_ROOT}/features/nvafxdenoiser/models/${ECHONULL_NVAFX_ARCHITECTURE}/denoiser_48k.trtpkg")
+  set(ECHONULL_AEC_MODELS)
+  set(ECHONULL_NOISE_MODELS)
+  foreach(model_architecture IN LISTS ECHONULL_NVAFX_ARCHITECTURES)
+    set(aec_model
+      "${AFX_SDK_ROOT}/features/nvafxaec/models/${model_architecture}/aec_48k.trtpkg")
+    set(noise_model
+      "${AFX_SDK_ROOT}/features/nvafxdenoiser/models/${model_architecture}/denoiser_48k.trtpkg")
+    if(NOT EXISTS "${aec_model}")
+      message(FATAL_ERROR
+        "The ${model_architecture} 48 kHz AEC model is missing: ${aec_model}")
+    endif()
+    if(NOT EXISTS "${noise_model}")
+      message(FATAL_ERROR
+        "The ${model_architecture} 48 kHz Denoiser model is missing: ${noise_model}")
+    endif()
+    list(APPEND ECHONULL_AEC_MODELS "${model_architecture}|${aec_model}")
+    list(APPEND ECHONULL_NOISE_MODELS "${model_architecture}|${noise_model}")
+  endforeach()
   set(ECHONULL_NVAFX_LICENSES
     "${AFX_SDK_ROOT}/license/NVIDIA-Software-License-Agreement-2025.05.05.pdf"
     "${AFX_SDK_ROOT}/license/product-specific-terms-for-nvidia-ai-products-2025.05.05.pdf"
@@ -107,11 +124,6 @@ if(ECHONULL_HAS_NVAFX AND ECHONULL_EMBED_NVAFX)
   if(NOT ECHONULL_NVAFX_RUNTIME_DLLS)
     message(FATAL_ERROR "No NvAFX runtime DLLs were found below AFX_SDK_ROOT.")
   endif()
-  if(NOT EXISTS "${ECHONULL_AEC_MODEL}")
-    message(FATAL_ERROR
-      "The ${ECHONULL_NVAFX_ARCHITECTURE} 48 kHz AEC model is missing: ${ECHONULL_AEC_MODEL}")
-  endif()
-
   add_executable(echonull_bundle_packer tools/bundle_packer.cpp)
   target_include_directories(echonull_bundle_packer PRIVATE src)
   target_compile_definitions(echonull_bundle_packer PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -132,21 +144,28 @@ target_link_libraries(echonull_plugin PRIVATE echonull_infrastructure
 set_target_properties(echonull_plugin PROPERTIES
   OUTPUT_NAME "EchoNullPlugin"
   PREFIX "")
-if(ECHONULL_HAS_NVAFX AND ECHONULL_EMBED_NVAFX)
+if(ECHONULL_HAS_NVAFX AND ECHONULL_EMBED_NVAFX AND
+   ECHONULL_PACKAGE_DEFAULT_ARTIFACTS)
   add_dependencies(echonull_plugin echonull_bundle_packer)
   set(ECHONULL_BUNDLE_ARGUMENTS)
   foreach(runtime_dll IN LISTS ECHONULL_NVAFX_RUNTIME_DLLS)
     get_filename_component(runtime_name "${runtime_dll}" NAME)
     list(APPEND ECHONULL_BUNDLE_ARGUMENTS "${runtime_name}" "${runtime_dll}")
   endforeach()
-  list(APPEND ECHONULL_BUNDLE_ARGUMENTS "aec_48k.trtpkg" "${ECHONULL_AEC_MODEL}")
-  if(EXISTS "${ECHONULL_NOISE_MODEL}")
+  foreach(model IN LISTS ECHONULL_AEC_MODELS)
+    string(REPLACE "|" ";" model_parts "${model}")
+    list(GET model_parts 0 model_architecture)
+    list(GET model_parts 1 model_path)
     list(APPEND ECHONULL_BUNDLE_ARGUMENTS
-      "denoiser_48k.trtpkg" "${ECHONULL_NOISE_MODEL}")
-  else()
-    message(WARNING
-      "The 48 kHz Denoiser model is not installed. Noise Removal will report MODEL MISSING.")
-  endif()
+      "aec_48k_${model_architecture}.trtpkg" "${model_path}")
+  endforeach()
+  foreach(model IN LISTS ECHONULL_NOISE_MODELS)
+    string(REPLACE "|" ";" model_parts "${model}")
+    list(GET model_parts 0 model_architecture)
+    list(GET model_parts 1 model_path)
+    list(APPEND ECHONULL_BUNDLE_ARGUMENTS
+      "denoiser_48k_${model_architecture}.trtpkg" "${model_path}")
+  endforeach()
   foreach(license_file IN LISTS ECHONULL_NVAFX_LICENSES)
     if(EXISTS "${license_file}")
       get_filename_component(license_name "${license_file}" NAME)
@@ -164,6 +183,35 @@ if(ECHONULL_HAS_NVAFX AND ECHONULL_EMBED_NVAFX)
 endif()
 if(MSVC)
   target_compile_options(echonull_plugin PRIVATE /W4 /permissive- /utf-8 /EHsc)
+endif()
+
+add_executable(echonull_setup WIN32
+  src/setup/setup_main.cpp
+  src/infrastructure/equalizer_apo_config.cpp)
+target_include_directories(echonull_setup PRIVATE src src/setup)
+target_compile_definitions(echonull_setup PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_link_libraries(echonull_setup PRIVATE advapi32 comctl32 user32)
+set_target_properties(echonull_setup PROPERTIES OUTPUT_NAME "EchoNullSetupStub")
+if(MSVC)
+  target_compile_options(echonull_setup PRIVATE /W4 /permissive- /utf-8 /EHsc)
+  target_link_options(echonull_setup PRIVATE
+    "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
+endif()
+
+if(ECHONULL_HAS_NVAFX AND ECHONULL_EMBED_NVAFX AND
+   ECHONULL_PACKAGE_DEFAULT_ARTIFACTS)
+  add_custom_command(
+    OUTPUT "${CMAKE_SOURCE_DIR}/EchoNullSetup.exe"
+    COMMAND "${CMAKE_COMMAND}" -E copy
+      "$<TARGET_FILE:echonull_setup>" "${CMAKE_SOURCE_DIR}/EchoNullSetup.exe"
+    COMMAND "$<TARGET_FILE:echonull_bundle_packer>"
+      "${CMAKE_SOURCE_DIR}/EchoNullSetup.exe"
+      "EchoNullPlugin.dll" "${CMAKE_SOURCE_DIR}/EchoNullPlugin.dll"
+    DEPENDS echonull_setup echonull_plugin echonull_bundle_packer
+    COMMENT "Packing EchoNullPlugin.dll into EchoNullSetup.exe"
+    VERBATIM)
+  add_custom_target(echonull_setup_package ALL
+    DEPENDS "${CMAKE_SOURCE_DIR}/EchoNullSetup.exe")
 endif()
 
 if(ECHONULL_BUILD_TESTS)
