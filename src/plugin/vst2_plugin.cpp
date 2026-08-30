@@ -276,7 +276,7 @@ intptr_t VST_FUNCTION_INTERFACE control(vst_effect_t* effect, const int32_t opco
       copy_text(pointer, VST_BUFFER_SIZE_PRODUCT_NAME, "EchoNull AEC");
       return 1;
     case VST_EFFECT_OPCODE_VENDOR_VERSION:
-      return 100;
+      return 101;
     case VST_EFFECT_OPCODE_VST_VERSION:
       return VST_VERSION_2_4_0_0;
     case VST_EFFECT_OPCODE_SUPPORTS:

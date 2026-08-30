@@ -12,7 +12,8 @@
 namespace echonull {
 namespace {
 
-constexpr wchar_t kMappingName[] = L"Local\\EchoNull.Telemetry.v1";
+constexpr wchar_t kGlobalMappingName[] = L"Global\\EchoNull.Telemetry.v2";
+constexpr wchar_t kLocalMappingName[] = L"Local\\EchoNull.Telemetry.v2";
 constexpr std::uint32_t kMagic = 0x454E544DU;  // ENTM
 constexpr std::uint32_t kVersion = 1;
 
@@ -78,7 +79,12 @@ void TelemetryBusWriter::open() {
   SECURITY_ATTRIBUTES security{sizeof(security), descriptor, FALSE};
   mapping_ = CreateFileMappingW(
       INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0,
-      static_cast<DWORD>(sizeof(SharedTelemetry)), kMappingName);
+      static_cast<DWORD>(sizeof(SharedTelemetry)), kGlobalMappingName);
+  if (mapping_ == nullptr && GetLastError() == ERROR_ACCESS_DENIED) {
+    mapping_ = CreateFileMappingW(
+        INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0,
+        static_cast<DWORD>(sizeof(SharedTelemetry)), kLocalMappingName);
+  }
   LocalFree(descriptor);
   if (mapping_ == nullptr) {
     throw std::runtime_error("could not create EchoNull telemetry mapping");
@@ -118,7 +124,10 @@ TelemetryBusReader::~TelemetryBusReader() { close(); }
 
 bool TelemetryBusReader::open() {
   close();
-  mapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, kMappingName);
+  mapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, kLocalMappingName);
+  if (mapping_ == nullptr) {
+    mapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, kGlobalMappingName);
+  }
   if (mapping_ == nullptr) return false;
   view_ = MapViewOfFile(mapping_, FILE_MAP_READ, 0, 0, sizeof(SharedTelemetry));
   if (view_ == nullptr) {

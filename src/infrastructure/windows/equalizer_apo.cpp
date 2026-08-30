@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
@@ -113,6 +114,53 @@ std::string quote_config_path(const std::filesystem::path& path) {
   return '"' + escaped + '"';
 }
 
+std::string lowercase_ascii(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](const char character) {
+    return static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+  });
+  return value;
+}
+
+std::string trim_ascii(std::string value) {
+  const auto first = value.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) return {};
+  const auto last = value.find_last_not_of(" \t\r\n");
+  return value.substr(first, last - first + 1);
+}
+
+std::string scope_aec_plugin_to_capture(
+    const std::string& root, const std::filesystem::path& plugin_path) {
+  const std::string plugin_name = lowercase_ascii(
+      wide_to_utf8(plugin_path.filename().wstring()));
+  if (plugin_name.empty()) return root;
+
+  std::string result;
+  result.reserve(root.size() + 32);
+  std::string previous_line;
+  std::size_t offset = 0;
+  while (offset < root.size()) {
+    const auto newline = root.find('\n', offset);
+    const auto length = newline == std::string::npos
+                            ? root.size() - offset
+                            : newline - offset + 1;
+    const std::string line = root.substr(offset, length);
+    const std::string normalized = lowercase_ascii(trim_ascii(line));
+    const bool is_plugin_line =
+        normalized.starts_with("vstplugin:") &&
+        normalized.find(plugin_name) != std::string::npos;
+    const bool is_reference_mode =
+        normalized.find("mode 0") != std::string::npos;
+    if (is_plugin_line && !is_reference_mode &&
+        lowercase_ascii(trim_ascii(previous_line)) != "stage: capture") {
+      result += "Stage: capture\r\n";
+    }
+    result += line;
+    previous_line = line;
+    offset += length;
+  }
+  return result;
+}
+
 }  // namespace
 
 std::filesystem::path EqualizerApoIntegration::config_directory() {
@@ -178,7 +226,7 @@ void EqualizerApoIntegration::apply_reference_endpoint(
   write_file_atomically(managed_path, managed);
 
   const auto root_path = directory / L"config.txt";
-  std::string root = read_file(root_path);
+  std::string root = scope_aec_plugin_to_capture(read_file(root_path), plugin_path);
   const std::string block = std::string(kManagedBegin) + "\r\n" +
                             "Device: all\r\n" +
                             "Include: " + wide_to_utf8(kManagedFileName) + "\r\n" +

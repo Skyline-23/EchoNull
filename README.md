@@ -85,8 +85,11 @@ NVIDIA headers.
 2. Put it in `C:\Program Files\EqualizerAPO\VSTPlugins`.
 3. Open Equalizer APO Device Selector. Enable capture processing on the existing
    microphone and post-mix processing on playback devices you want to use.
-4. In Configuration Editor, scope a section to the microphone and import
-   `EchoNullPlugin.dll` with the VST plug-in command.
+4. In Configuration Editor, add `Stage: capture`, then import
+   `EchoNullPlugin.dll` with the VST plug-in command. This follows whichever
+   microphone capture pipeline has Equalizer APO enabled; no microphone GUID is
+   stored. **APPLY REFERENCE** also inserts the missing capture-stage guard when
+   the plug-in line is directly in `config.txt`.
 5. Open the embedded panel, choose the playback reference, and press
    **APPLY REFERENCE**.
 
