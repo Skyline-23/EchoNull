@@ -37,12 +37,35 @@ jobs:
         env:
           NGC_API_KEY: ${{ secrets.NGC_CLI_API_KEY }}
         run: |
-          $uri = "https://api.ngc.nvidia.com/v2/org/nvidia/team/maxine/resources/maxine_windows_audio_effects_sdk/versions/2.1.0/zip"
-          curl.exe -fL `
-            -H "Authorization: Bearer $env:NGC_API_KEY" `
-            -H "Content-Type: application/json" `
-            -o afx-sdk-resource.zip $uri
-          if ($LASTEXITCODE -ne 0) { throw "NGC SDK download failed." }
+          $resourceUri = "https://api.ngc.nvidia.com/v2/org/nvidia/team/maxine/resources/maxine_windows_audio_effects_sdk/versions/2.1.0"
+          $headers = @{
+            Authorization = "Bearer $env:NGC_API_KEY"
+            Accept = "application/json"
+          }
+          $listing = Invoke-RestMethod `
+            -Uri "$resourceUri/files" `
+            -Method Get `
+            -Headers $headers
+          $archive = @($listing.recipeFiles) |
+            Where-Object { $_.path -like "*.zip" } |
+            Select-Object -First 1
+          if (-not $archive) {
+            throw "The NGC SDK resource did not list a ZIP archive."
+          }
+
+          $archiveName = [Uri]::EscapeDataString([string]$archive.path)
+          Invoke-WebRequest `
+            -Uri "$resourceUri/files/$archiveName" `
+            -Headers $headers `
+            -OutFile afx-sdk-resource.zip
+          $actualHash = (Get-FileHash `
+            -LiteralPath afx-sdk-resource.zip `
+            -Algorithm SHA256).Hash
+          $actualHashBase64 = [Convert]::ToBase64String(
+            [Convert]::FromHexString($actualHash))
+          if ($actualHashBase64 -ne [string]$archive.sha256_base64) {
+            throw "The NGC SDK archive failed SHA-256 verification."
+          }
           Expand-Archive -LiteralPath afx-sdk-resource.zip -DestinationPath afx-sdk-resource
 
           $header = Get-ChildItem -LiteralPath afx-sdk-resource -Recurse -File `
@@ -67,31 +90,59 @@ jobs:
         env:
           NGC_CLI_API_KEY: ${{ secrets.NGC_CLI_API_KEY }}
         run: |
-          $downloader = Join-Path $env:AFX_SDK_ROOT "features/download_features.ps1"
-          if (-not (Test-Path -LiteralPath $downloader)) {
-            throw "The AFX feature downloader was not found."
+          $headers = @{
+            Authorization = "Bearer $env:NGC_CLI_API_KEY"
+            Accept = "application/json"
+          }
+          $modelRoot = Join-Path $env:AFX_SDK_ROOT `
+            "features/nvafxdenoiser/models/blackwell"
+          $runtimeRoot = Join-Path $env:AFX_SDK_ROOT `
+            "features/nvafxdenoiser/bin"
+          $downloads = @(
+            @{
+              Variant = "2.1.0-48k-blackwell"
+              Names = @("denoiser_48k.trtpkg", "denoiser_48k.trtpkg.md5")
+              Destination = $modelRoot
+            },
+            @{
+              Variant = "2.1.0-dynamic-library"
+              Names = @("nvafxdenoiser.dll", "nvafxdenoiser.dll.md5")
+              Destination = $runtimeRoot
+            }
+          )
+          $modelUri = "https://api.ngc.nvidia.com/v2/org/nvidia/team/maxine/models/afx_win_denoiser"
+          foreach ($download in $downloads) {
+            New-Item -ItemType Directory `
+              -Path $download.Destination `
+              -Force | Out-Null
+            $listing = Invoke-RestMethod `
+              -Uri "$modelUri/$($download.Variant)/files" `
+              -Method Get `
+              -Headers $headers
+            for ($index = 0; $index -lt @($listing.filepath).Count; $index++) {
+              $name = [string]$listing.filepath[$index]
+              if ($download.Names -notcontains $name) { continue }
+              Invoke-WebRequest `
+                -Uri ([string]$listing.urls[$index]) `
+                -OutFile (Join-Path $download.Destination $name)
+            }
           }
 
-          # NVIDIA's bundled script prints the credential by default. Remove
-          # that diagnostic before execution; GitHub Secrets are still the only
-          # source of the key.
-          $source = Get-Content -LiteralPath $downloader -Raw
-          $source = $source -replace `
-            '(?m)^\s*Write-Host\s+"API Key:\s*\$API_KEY"\s*$', `
-            'Write-Host "API Key: [REDACTED]"'
-          Set-Content -LiteralPath $downloader -Value $source -Encoding utf8
-
-          & $downloader `
-            -GPU_Architecture blackwell `
-            -Effects denoiser-48k `
-            -Output_Directory (Join-Path $env:AFX_SDK_ROOT "features")
-          if ($LASTEXITCODE -ne 0) {
-            throw "NVIDIA Noise Removal feature download failed."
-          }
           $model = Join-Path $env:AFX_SDK_ROOT `
             "features/nvafxdenoiser/models/blackwell/denoiser_48k.trtpkg"
-          if (-not (Test-Path -LiteralPath $model)) {
-            throw "The 48 kHz Blackwell Denoiser model was not downloaded."
+          $runtime = Join-Path $env:AFX_SDK_ROOT `
+            "features/nvafxdenoiser/bin/nvafxdenoiser.dll"
+          foreach ($file in @($model, $runtime)) {
+            $checksum = "$file.md5"
+            if (-not (Test-Path -LiteralPath $file) -or
+                -not (Test-Path -LiteralPath $checksum)) {
+              throw "A required Noise Removal file was not downloaded."
+            }
+            $expected = (Get-Content -LiteralPath $checksum -Raw).Trim()
+            $actual = (Get-FileHash -LiteralPath $file -Algorithm MD5).Hash
+            if ($actual -ine $expected) {
+              throw "A Noise Removal file failed MD5 verification."
+            }
           }
 
       - name: Configure self-contained release
