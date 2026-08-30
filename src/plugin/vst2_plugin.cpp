@@ -29,10 +29,6 @@ std::filesystem::path module_path() {
   return path;
 }
 
-std::filesystem::path module_config_path() {
-  return module_path().parent_path() / L"echonull.ini";
-}
-
 void copy_text(void* target, const std::size_t capacity, const char* value) {
   if (target == nullptr || capacity == 0) return;
   strncpy_s(static_cast<char*>(target), capacity, value, _TRUNCATE);
@@ -49,7 +45,7 @@ struct EffectInstance {
   float mode = 1.0F;
   float aec_enabled = 1.0F;
   float aec_strength = 1.0F;
-  float noise_enabled = 1.0F;
+  float noise_enabled = 0.0F;
   float noise_strength = 1.0F;
   bool started = false;
 };
@@ -61,7 +57,7 @@ EffectInstance* instance(vst_effect_t* effect) {
 void start(EffectInstance& value) noexcept {
   if (value.started) return;
   try {
-    value.processor.start(module_config_path());
+    value.processor.start(module_path());
     value.started = true;
   } catch (...) {
     value.started = false;
@@ -81,9 +77,9 @@ std::pair<std::wstring, bool> runtime_status_values(
     const echonull::PluginErrorReason noise_error) {
   if (mode < 0.5F) return {L"REFERENCE TAP ACTIVE", true};
   const bool noise_on = noise_enabled >= 0.5F;
-  if (aec_error == echonull::PluginErrorReason::config ||
-      noise_error == echonull::PluginErrorReason::config) {
-    return {L"CONFIG FILE ERROR · BYPASS", false};
+  if (aec_error == echonull::PluginErrorReason::package ||
+      noise_error == echonull::PluginErrorReason::package) {
+    return {L"PACKAGE ERROR · BYPASS", false};
   }
   if (aec_enabled < 0.5F) {
     if (!noise_on) return {L"ALL EFFECTS BYPASSED", true};
@@ -375,6 +371,26 @@ extern "C" __declspec(dllexport) vst_effect_t* VSTPluginMain(
   self->effect.version = 100;
   self->effect.process_float = &process;
   return &self->effect;
+}
+
+extern "C" __declspec(dllexport) int EchoNullRuntimeSelfTest() {
+  try {
+    echonull::PluginProcessor processor;
+    processor.set_noise_enabled(false);
+    processor.start(module_path());
+    const auto reason = processor.aec_error_reason();
+    const auto state = processor.runtime_state();
+    processor.stop();
+    if (reason == echonull::PluginErrorReason::none &&
+        state == echonull::PluginRuntimeState::waiting_for_reference) {
+      return 0;
+    }
+    if (reason == echonull::PluginErrorReason::package) return 1;
+    if (reason == echonull::PluginErrorReason::model_missing) return 2;
+    return 3;
+  } catch (...) {
+    return 4;
+  }
 }
 
 BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID) {

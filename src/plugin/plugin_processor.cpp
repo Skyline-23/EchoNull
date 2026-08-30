@@ -11,9 +11,9 @@
 #include "application/streaming_resampler.hpp"
 #include "application/timestamped_audio_buffer.hpp"
 #include "domain/audio_types.hpp"
-#include "infrastructure/config.hpp"
 #include "infrastructure/nvidia/nvafx_aec.hpp"
 #include "infrastructure/nvidia/nvafx_denoiser.hpp"
+#include "infrastructure/nvidia/packaged_runtime.hpp"
 #include "infrastructure/windows/reference_bus.hpp"
 #include "infrastructure/windows/telemetry_bus.hpp"
 
@@ -92,12 +92,14 @@ struct PluginProcessor::Impl {
   std::unique_ptr<DelayEstimator> delay_estimator;
   std::unique_ptr<NvafxAec> aec;
   std::unique_ptr<NvafxDenoiser> denoiser;
-  Config config;
   std::deque<float> near_queue;
   std::deque<float> output_queue;
   std::int64_t input_origin_hns = 0;
   std::int64_t near_queue_start_hns = 0;
   double delay_ms = 40.0;
+  bool auto_delay = true;
+  double max_delay_ms = 250.0;
+  std::uint32_t timeline_capacity_ms = 4000;
   std::size_t aec_frame_samples = 0;
   bool aec_ready = false;
   bool noise_ready = false;
@@ -110,7 +112,7 @@ void PluginProcessor::set_mode(const PluginMode mode) {
   if (mode_ == mode) return;
   stop();
   mode_ = mode;
-  if (!config_path_.empty()) start(config_path_);
+  if (!plugin_path_.empty()) start(plugin_path_);
 }
 
 void PluginProcessor::set_aec_enabled(const bool enabled) noexcept {
@@ -168,12 +170,12 @@ void PluginProcessor::set_sample_rate(const std::uint32_t sample_rate) {
   if (sample_rate == 0 || sample_rate_ == sample_rate) return;
   stop();
   sample_rate_ = sample_rate;
-  if (!config_path_.empty()) start(config_path_);
+  if (!plugin_path_.empty()) start(plugin_path_);
 }
 
-void PluginProcessor::start(const std::filesystem::path& config_path) {
+void PluginProcessor::start(const std::filesystem::path& plugin_path) {
   stop();
-  config_path_ = config_path;
+  plugin_path_ = plugin_path;
   runtime_state_.store(PluginRuntimeState::idle, std::memory_order_relaxed);
   try {
     impl_->input_resampler =
@@ -197,18 +199,30 @@ void PluginProcessor::start(const std::filesystem::path& config_path) {
       }
     }
 
-    impl_->config = Config::load(config_path_);
-    impl_->delay_ms = impl_->config.delay_ms;
+    std::filesystem::path aec_model;
+    std::filesystem::path noise_model;
+    bool runtime_ready = false;
+#if ECHONULL_HAS_NVAFX
+    try {
+      const auto packaged = PackagedRuntime::prepare(plugin_path_);
+      aec_model = packaged.aec_model;
+      noise_model = packaged.noise_model;
+      runtime_ready = true;
+    } catch (...) {
+      runtime_ready = false;
+    }
+#endif
+    impl_->delay_ms = 40.0;
     impl_->output_resampler =
         std::make_unique<StreamingResampler>(kSampleRate, sample_rate_);
     impl_->reference_reader = std::make_unique<ReferenceBusReader>();
     impl_->reference_timeline = std::make_unique<TimestampedAudioBuffer>(
-        impl_->config.timeline_capacity_ms, kSampleRate);
+        impl_->timeline_capacity_ms, kSampleRate);
     impl_->delay_estimator = std::make_unique<DelayEstimator>(
-        kSampleRate, impl_->config.delay_ms, impl_->config.max_delay_ms);
-    const auto aec_model = impl_->config.resolve_model_path();
+        kSampleRate, impl_->delay_ms, impl_->max_delay_ms);
     aec_error_reason_.store(
-        std::filesystem::is_regular_file(aec_model)
+        !runtime_ready ? PluginErrorReason::runtime_or_gpu
+        : std::filesystem::is_regular_file(aec_model)
             ? PluginErrorReason::none
             : PluginErrorReason::model_missing,
         std::memory_order_relaxed);
@@ -235,9 +249,9 @@ void PluginProcessor::start(const std::filesystem::path& config_path) {
       }
     }
 
-    const auto noise_model = impl_->config.resolve_noise_model_path();
     noise_error_reason_.store(
-        std::filesystem::is_regular_file(noise_model)
+        !runtime_ready ? PluginErrorReason::runtime_or_gpu
+        : std::filesystem::is_regular_file(noise_model)
             ? PluginErrorReason::none
             : PluginErrorReason::model_missing,
         std::memory_order_relaxed);
@@ -279,9 +293,9 @@ void PluginProcessor::start(const std::filesystem::path& config_path) {
         std::memory_order_relaxed);
   } catch (...) {
     stop();
-    aec_error_reason_.store(PluginErrorReason::config,
+    aec_error_reason_.store(PluginErrorReason::package,
                             std::memory_order_relaxed);
-    noise_error_reason_.store(PluginErrorReason::config,
+    noise_error_reason_.store(PluginErrorReason::package,
                               std::memory_order_relaxed);
     runtime_state_.store(PluginRuntimeState::error, std::memory_order_relaxed);
     throw;
@@ -399,7 +413,7 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
         unshifted_coverage = impl_->reference_timeline->read(
             impl_->near_queue_start_hns, unshifted_far);
       }
-      if (unshifted_coverage >= 0.98 && impl_->config.auto_delay &&
+      if (unshifted_coverage >= 0.98 && impl_->auto_delay &&
           impl_->delay_estimator) {
         impl_->delay_estimator->add(near_end, unshifted_far);
         if (impl_->delay_estimator->has_estimate()) {
@@ -453,7 +467,7 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
       if (impl_->reference_timeline) {
         impl_->reference_timeline->discard_before(
             impl_->near_queue_start_hns -
-            milliseconds_to_hns(impl_->config.max_delay_ms + 500.0));
+            milliseconds_to_hns(impl_->max_delay_ms + 500.0));
       }
     }
 

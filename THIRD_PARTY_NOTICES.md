@@ -34,6 +34,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## NVIDIA Audio Effects SDK
 
-NVIDIA headers, binaries, dependencies, and model packages are not included in
-this source repository. When supplied by a local SDK installation they remain
-subject to NVIDIA's applicable SDK and redistribution terms.
+NVIDIA headers, binaries, dependencies, and model packages are not committed to
+this source repository. A self-contained release binary embeds the redistributable
+runtime, selected model packages, and copies of the applicable NVIDIA agreements
+from the builder's local SDK. EchoNull extracts that payload into a versioned
+runtime cache when the plug-in starts. All NVIDIA materials remain subject to
+the agreements embedded in the release DLL and extracted beside the runtime.

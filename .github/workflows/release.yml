@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Release tag to create or update
+        required: true
+        default: v0.1.0
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require NGC credential
+        shell: pwsh
+        env:
+          NGC_API_KEY: ${{ secrets.NGC_CLI_API_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:NGC_API_KEY)) {
+            throw "Repository secret NGC_CLI_API_KEY is required for release builds."
+          }
+
+      - name: Download NVIDIA AFX SDK 2.1.0
+        shell: pwsh
+        env:
+          NGC_API_KEY: ${{ secrets.NGC_CLI_API_KEY }}
+        run: |
+          $uri = "https://api.ngc.nvidia.com/v2/org/nvidia/team/maxine/resources/maxine_windows_audio_effects_sdk/versions/2.1.0/zip"
+          curl.exe -fL `
+            -H "Authorization: Bearer $env:NGC_API_KEY" `
+            -H "Content-Type: application/json" `
+            -o afx-sdk-resource.zip $uri
+          if ($LASTEXITCODE -ne 0) { throw "NGC SDK download failed." }
+          Expand-Archive -LiteralPath afx-sdk-resource.zip -DestinationPath afx-sdk-resource
+
+          $header = Get-ChildItem -LiteralPath afx-sdk-resource -Recurse -File `
+            -Filter nvAudioEffects.h | Select-Object -First 1
+          if (-not $header) {
+            $index = 0
+            Get-ChildItem -LiteralPath afx-sdk-resource -Recurse -File -Filter *.zip |
+              ForEach-Object {
+                $destination = Join-Path $PWD "afx-sdk-expanded-$index"
+                Expand-Archive -LiteralPath $_.FullName -DestinationPath $destination
+                $script:index++
+              }
+            $header = Get-ChildItem -Path "$PWD/afx-sdk-expanded-*" -Recurse -File `
+              -Filter nvAudioEffects.h | Select-Object -First 1
+          }
+          if (-not $header) { throw "nvAudioEffects.h was not found in the NGC resource." }
+          $sdkRoot = Split-Path -Parent (Split-Path -Parent $header.FullName)
+          "AFX_SDK_ROOT=$sdkRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Configure self-contained release
+        shell: pwsh
+        run: |
+          cmake -S . -B build -A x64 `
+            -DAFX_SDK_ROOT="$env:AFX_SDK_ROOT" `
+            -DECHONULL_BUILD_TESTS=ON `
+            -DECHONULL_EMBED_NVAFX=ON `
+            -DECHONULL_NVAFX_ARCHITECTURE=blackwell
+
+      - name: Build and test
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --parallel
+          ctest --test-dir build -C Release --output-on-failure
+          if (-not (Test-Path -LiteralPath EchoNullPlugin.dll)) {
+            throw "Self-contained EchoNullPlugin.dll was not produced."
+          }
+
+      - name: Write checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash -LiteralPath EchoNullPlugin.dll -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash *EchoNullPlugin.dll" | Set-Content -LiteralPath EchoNullPlugin.dll.sha256 -NoNewline
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: EchoNull ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: |
+            EchoNullPlugin.dll
+            EchoNullPlugin.dll.sha256

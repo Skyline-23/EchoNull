@@ -11,7 +11,7 @@
 #include <stdexcept>
 #include <utility>
 
-#include "infrastructure/config.hpp"
+#include "infrastructure/text_encoding.hpp"
 #include "infrastructure/windows/equalizer_apo.hpp"
 
 namespace echonull {

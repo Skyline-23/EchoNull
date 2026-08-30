@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <string>
 
-#include "infrastructure/config.hpp"
+#include "infrastructure/text_encoding.hpp"
 #include "infrastructure/windows/device_manager.hpp"
 
 namespace echonull {

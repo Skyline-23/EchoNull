@@ -9,9 +9,15 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 option(ECHONULL_BUILD_TESTS "Build EchoNull unit tests" ON)
+option(ECHONULL_EMBED_NVAFX "Pack the NvAFX runtime and model into EchoNullPlugin.dll" ON)
 set(AFX_SDK_ROOT "" CACHE PATH "Root of the NVIDIA Audio Effects SDK")
+set(ECHONULL_NVAFX_ARCHITECTURE "blackwell" CACHE STRING
+  "NvAFX model architecture to embed (turing, ampere, ada, or blackwell)")
 
 include(FetchContent)
 FetchContent_Declare(vst2sdk
@@ -32,13 +38,8 @@ find_path(ECHONULL_NVAFX_AEC_INCLUDE_DIR
   NAMES nvAFXAec.h
   HINTS "${AFX_SDK_ROOT}/features/nvafxaec/include"
   NO_DEFAULT_PATH)
-find_library(ECHONULL_NVAFX_LIBRARY
-  NAMES NVAudioEffects
-  HINTS "${AFX_SDK_ROOT}/lib"
-  NO_DEFAULT_PATH)
-
 set(ECHONULL_HAS_NVAFX 0)
-if(ECHONULL_NVAFX_INCLUDE_DIR AND ECHONULL_NVAFX_LIBRARY)
+if(ECHONULL_NVAFX_INCLUDE_DIR)
   set(ECHONULL_HAS_NVAFX 1)
   message(STATUS "NVIDIA AFX SDK found at ${AFX_SDK_ROOT}")
 else()
@@ -64,9 +65,11 @@ if(MSVC)
 endif()
 
 add_library(echonull_infrastructure
-  src/infrastructure/config.cpp
+  src/infrastructure/nvidia/nvafx_api.cpp
   src/infrastructure/nvidia/nvafx_aec.cpp
   src/infrastructure/nvidia/nvafx_denoiser.cpp
+  src/infrastructure/nvidia/packaged_runtime.cpp
+  src/infrastructure/text_encoding.cpp
   src/infrastructure/windows/device_manager.cpp
   src/infrastructure/windows/equalizer_apo.cpp
   src/infrastructure/windows/reference_bus.cpp
@@ -86,22 +89,34 @@ if(ECHONULL_HAS_NVAFX)
   if(ECHONULL_NVAFX_AEC_INCLUDE_DIR)
     target_include_directories(echonull_infrastructure PRIVATE "${ECHONULL_NVAFX_AEC_INCLUDE_DIR}")
   endif()
-  target_link_libraries(echonull_infrastructure PRIVATE "${ECHONULL_NVAFX_LIBRARY}")
 endif()
 
-if(ECHONULL_HAS_NVAFX)
+if(ECHONULL_HAS_NVAFX AND ECHONULL_EMBED_NVAFX)
   file(GLOB_RECURSE ECHONULL_NVAFX_RUNTIME_DLLS CONFIGURE_DEPENDS
     "${AFX_SDK_ROOT}/bin/*.dll"
-    "${AFX_SDK_ROOT}/features/nvafxaec/bin/*.dll")
+    "${AFX_SDK_ROOT}/features/nvafx*/bin/*.dll")
+  set(ECHONULL_AEC_MODEL
+    "${AFX_SDK_ROOT}/features/nvafxaec/models/${ECHONULL_NVAFX_ARCHITECTURE}/aec_48k.trtpkg")
+  set(ECHONULL_NOISE_MODEL
+    "${AFX_SDK_ROOT}/features/nvafxdenoiser/models/${ECHONULL_NVAFX_ARCHITECTURE}/denoiser_48k.trtpkg")
+  set(ECHONULL_NVAFX_LICENSES
+    "${AFX_SDK_ROOT}/license/NVIDIA-Software-License-Agreement-2025.05.05.pdf"
+    "${AFX_SDK_ROOT}/license/product-specific-terms-for-nvidia-ai-products-2025.05.05.pdf"
+    "${AFX_SDK_ROOT}/features/nvafxaec/license/NVIDIA-Models-Community-License-2025-04-15.pdf")
+  if(NOT ECHONULL_NVAFX_RUNTIME_DLLS)
+    message(FATAL_ERROR "No NvAFX runtime DLLs were found below AFX_SDK_ROOT.")
+  endif()
+  if(NOT EXISTS "${ECHONULL_AEC_MODEL}")
+    message(FATAL_ERROR
+      "The ${ECHONULL_NVAFX_ARCHITECTURE} 48 kHz AEC model is missing: ${ECHONULL_AEC_MODEL}")
+  endif()
 
-  function(echonull_copy_nvafx_runtime target)
-    foreach(runtime_dll IN LISTS ECHONULL_NVAFX_RUNTIME_DLLS)
-      add_custom_command(TARGET ${target} POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-          "${runtime_dll}" "$<TARGET_FILE_DIR:${target}>"
-        VERBATIM)
-    endforeach()
-  endfunction()
+  add_executable(echonull_bundle_packer tools/bundle_packer.cpp)
+  target_include_directories(echonull_bundle_packer PRIVATE src)
+  target_compile_definitions(echonull_bundle_packer PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  if(MSVC)
+    target_compile_options(echonull_bundle_packer PRIVATE /W4 /permissive- /utf-8 /EHsc)
+  endif()
 endif()
 
 add_library(echonull_plugin MODULE
@@ -116,14 +131,36 @@ target_link_libraries(echonull_plugin PRIVATE echonull_infrastructure
 set_target_properties(echonull_plugin PROPERTIES
   OUTPUT_NAME "EchoNullPlugin"
   PREFIX "")
-if(ECHONULL_HAS_NVAFX)
-  echonull_copy_nvafx_runtime(echonull_plugin)
+if(ECHONULL_HAS_NVAFX AND ECHONULL_EMBED_NVAFX)
+  add_dependencies(echonull_plugin echonull_bundle_packer)
+  set(ECHONULL_BUNDLE_ARGUMENTS)
+  foreach(runtime_dll IN LISTS ECHONULL_NVAFX_RUNTIME_DLLS)
+    get_filename_component(runtime_name "${runtime_dll}" NAME)
+    list(APPEND ECHONULL_BUNDLE_ARGUMENTS "${runtime_name}" "${runtime_dll}")
+  endforeach()
+  list(APPEND ECHONULL_BUNDLE_ARGUMENTS "aec_48k.trtpkg" "${ECHONULL_AEC_MODEL}")
+  if(EXISTS "${ECHONULL_NOISE_MODEL}")
+    list(APPEND ECHONULL_BUNDLE_ARGUMENTS
+      "denoiser_48k.trtpkg" "${ECHONULL_NOISE_MODEL}")
+  else()
+    message(WARNING
+      "The 48 kHz Denoiser model is not installed. Noise Removal will report MODEL MISSING.")
+  endif()
+  foreach(license_file IN LISTS ECHONULL_NVAFX_LICENSES)
+    if(EXISTS "${license_file}")
+      get_filename_component(license_name "${license_file}" NAME)
+      list(APPEND ECHONULL_BUNDLE_ARGUMENTS "${license_name}" "${license_file}")
+    endif()
+  endforeach()
+  add_custom_command(TARGET echonull_plugin POST_BUILD
+    COMMAND "$<TARGET_FILE:echonull_bundle_packer>"
+      "$<TARGET_FILE:echonull_plugin>" ${ECHONULL_BUNDLE_ARGUMENTS}
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+      "$<TARGET_FILE:echonull_plugin>" "${CMAKE_SOURCE_DIR}/EchoNullPlugin.dll"
+    COMMENT "Packing NvAFX runtime and models into EchoNullPlugin.dll"
+    COMMAND_EXPAND_LISTS
+    VERBATIM)
 endif()
-add_custom_command(TARGET echonull_plugin POST_BUILD
-  COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-    "${CMAKE_SOURCE_DIR}/config/plugin.ini"
-    "$<TARGET_FILE_DIR:echonull_plugin>/echonull.ini"
-  VERBATIM)
 if(MSVC)
   target_compile_options(echonull_plugin PRIVATE /W4 /permissive- /utf-8 /EHsc)
 endif()
@@ -151,7 +188,4 @@ if(ECHONULL_BUILD_TESTS)
     COMMAND powershell -NoProfile -ExecutionPolicy Bypass
       -File "${CMAKE_SOURCE_DIR}/tests/architecture_boundaries.ps1"
       -SourceRoot "${CMAKE_SOURCE_DIR}/src")
-  if(ECHONULL_HAS_NVAFX)
-    echonull_copy_nvafx_runtime(echonull_tests)
-  endif()
 endif()

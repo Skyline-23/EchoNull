@@ -1,8 +1,9 @@
 /build/
+/build-*/
 /out/
+/EchoNullPlugin.dll
 /.vs/
 /*.user
 /*.suo
 *.wav
 *.log
-

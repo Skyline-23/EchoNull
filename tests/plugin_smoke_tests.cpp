@@ -28,12 +28,19 @@ void require(const bool condition, const char* message) {
 int wmain(const int argc, wchar_t** argv) {
   try {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    require(argc == 2, "plugin path argument is missing");
+    require(argc == 2 || argc == 3, "plugin path argument is missing");
     HMODULE module = LoadLibraryW(argv[1]);
     require(module != nullptr, "EchoNullPlugin.dll could not be loaded");
     const auto main_entry = reinterpret_cast<vst_effect_t* (*)(vst_host_callback_t)>(
         GetProcAddress(module, "VSTPluginMain"));
     require(main_entry != nullptr, "VSTPluginMain export is missing");
+    if (argc == 3 && _wcsicmp(argv[2], L"--runtime") == 0) {
+      const auto runtime_self_test = reinterpret_cast<int (*)()>(
+          GetProcAddress(module, "EchoNullRuntimeSelfTest"));
+      require(runtime_self_test != nullptr, "runtime self-test export is missing");
+      require(runtime_self_test() == 0,
+              "packaged NvAFX runtime or AEC model self-test failed");
+    }
     vst_effect_t* effect = main_entry(&host_callback);
     require(effect != nullptr && effect->magic_number == VST_MAGICNUMBER,
             "VST-compatible effect initialization failed");

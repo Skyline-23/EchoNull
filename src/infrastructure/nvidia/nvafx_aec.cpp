@@ -8,6 +8,7 @@
 
 #if ECHONULL_HAS_NVAFX
 #include <nvAudioEffects.h>
+#include "infrastructure/nvidia/nvafx_api.hpp"
 #if __has_include(<nvAFXAec.h>)
 #include <nvAFXAec.h>
 #endif
@@ -73,36 +74,37 @@ void NvafxAec::initialize() {
   };
 
   try {
+    auto& api = NvafxApi::instance();
     if (impl_->model_path.empty() || !std::filesystem::exists(impl_->model_path)) {
       throw std::runtime_error("NvAFX AEC model not found: " + impl_->model_path.string());
     }
-    check(NvAFX_CreateEffect(ECHONULL_NVAFX_AEC_EFFECT, &impl_->handle),
+    check(api.create_effect(ECHONULL_NVAFX_AEC_EFFECT, &impl_->handle),
           "NvAFX_CreateEffect(aec)");
     const auto model_utf8 = impl_->model_path.u8string();
     const auto* model = reinterpret_cast<const char*>(model_utf8.c_str());
-    check(NvAFX_SetString(impl_->handle, NVAFX_PARAM_MODEL_PATH, model),
+    check(api.set_string(impl_->handle, NVAFX_PARAM_MODEL_PATH, model),
           "NvAFX_SetString(model_path)");
-    check(NvAFX_SetU32(impl_->handle, NVAFX_PARAM_INPUT_SAMPLE_RATE, impl_->sample_rate),
+    check(api.set_u32(impl_->handle, NVAFX_PARAM_INPUT_SAMPLE_RATE, impl_->sample_rate),
           "NvAFX_SetU32(input_sample_rate)");
-    check(NvAFX_SetU32(impl_->handle, NVAFX_PARAM_OUTPUT_SAMPLE_RATE, impl_->sample_rate),
+    check(api.set_u32(impl_->handle, NVAFX_PARAM_OUTPUT_SAMPLE_RATE, impl_->sample_rate),
           "NvAFX_SetU32(output_sample_rate)");
-    check(NvAFX_SetFloat(impl_->handle, NVAFX_PARAM_INTENSITY_RATIO, impl_->intensity),
+    check(api.set_float(impl_->handle, NVAFX_PARAM_INTENSITY_RATIO, impl_->intensity),
           "NvAFX_SetFloat(intensity_ratio)");
-    check(NvAFX_Load(impl_->handle), "NvAFX_Load(aec)");
+    check(api.load_effect(impl_->handle), "NvAFX_Load(aec)");
 
     AecStatus current;
-    check(NvAFX_GetU32(impl_->handle, NVAFX_PARAM_INPUT_SAMPLE_RATE, &current.input_sample_rate),
+    check(api.get_u32(impl_->handle, NVAFX_PARAM_INPUT_SAMPLE_RATE, &current.input_sample_rate),
           "NvAFX_GetU32(input_sample_rate)");
-    check(NvAFX_GetU32(impl_->handle, NVAFX_PARAM_OUTPUT_SAMPLE_RATE, &current.output_sample_rate),
+    check(api.get_u32(impl_->handle, NVAFX_PARAM_OUTPUT_SAMPLE_RATE, &current.output_sample_rate),
           "NvAFX_GetU32(output_sample_rate)");
-    check(NvAFX_GetU32(impl_->handle, NVAFX_PARAM_NUM_INPUT_CHANNELS, &current.input_channels),
+    check(api.get_u32(impl_->handle, NVAFX_PARAM_NUM_INPUT_CHANNELS, &current.input_channels),
           "NvAFX_GetU32(input_channels)");
-    check(NvAFX_GetU32(impl_->handle, NVAFX_PARAM_NUM_OUTPUT_CHANNELS, &current.output_channels),
+    check(api.get_u32(impl_->handle, NVAFX_PARAM_NUM_OUTPUT_CHANNELS, &current.output_channels),
           "NvAFX_GetU32(output_channels)");
-    check(NvAFX_GetU32(impl_->handle, ECHONULL_NVAFX_INPUT_FRAME_PARAM,
+    check(api.get_u32(impl_->handle, ECHONULL_NVAFX_INPUT_FRAME_PARAM,
                        &current.input_frame_samples),
           "NvAFX_GetU32(input_frame_samples)");
-    check(NvAFX_GetU32(impl_->handle, ECHONULL_NVAFX_OUTPUT_FRAME_PARAM,
+    check(api.get_u32(impl_->handle, ECHONULL_NVAFX_OUTPUT_FRAME_PARAM,
                        &current.output_frame_samples),
           "NvAFX_GetU32(output_frame_samples)");
 
@@ -117,7 +119,7 @@ void NvafxAec::initialize() {
     impl_->status = current;
   } catch (const std::exception& error) {
     if (impl_->handle != nullptr) {
-      NvAFX_DestroyEffect(impl_->handle);
+      NvafxApi::instance().destroy_effect(impl_->handle);
       impl_->handle = nullptr;
     }
     std::scoped_lock lock(impl_->mutex);
@@ -132,8 +134,8 @@ void NvafxAec::reset() {
   std::scoped_lock lock(impl_->mutex);
 #if ECHONULL_HAS_NVAFX
   if (impl_->handle != nullptr) {
-    NvAFX_Reset(impl_->handle);
-    NvAFX_DestroyEffect(impl_->handle);
+    NvafxApi::instance().reset(impl_->handle);
+    NvafxApi::instance().destroy_effect(impl_->handle);
     impl_->handle = nullptr;
   }
 #endif
@@ -146,7 +148,7 @@ void NvafxAec::set_intensity(const float intensity) {
   impl_->intensity = value;
 #if ECHONULL_HAS_NVAFX
   if (impl_->handle != nullptr &&
-      NvAFX_SetFloat(impl_->handle, NVAFX_PARAM_INTENSITY_RATIO, value) !=
+      NvafxApi::instance().set_float(impl_->handle, NVAFX_PARAM_INTENSITY_RATIO, value) !=
           NVAFX_STATUS_SUCCESS) {
     throw std::runtime_error("NvAFX_SetFloat(aec intensity) failed");
   }
@@ -174,8 +176,9 @@ void NvafxAec::process(const std::span<const float> near_end,
   }
   const float* input_buffers[2] = {near_end.data(), far_end.data()};
   float* output_buffers[1] = {output.data()};
-  const NvAFX_Status result = NvAFX_Run(impl_->handle, input_buffers, output_buffers,
-                                        current.input_frame_samples, current.input_channels);
+  const NvAFX_Status result = NvafxApi::instance().run(
+      impl_->handle, input_buffers, output_buffers,
+      current.input_frame_samples, current.input_channels);
   if (result != NVAFX_STATUS_SUCCESS) {
     throw std::runtime_error("NvAFX_Run failed with status " +
                              std::to_string(static_cast<int>(result)));

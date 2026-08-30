@@ -8,6 +8,7 @@
 
 #if ECHONULL_HAS_NVAFX
 #include <nvAudioEffects.h>
+#include "infrastructure/nvidia/nvafx_api.hpp"
 
 #if defined(NVAFX_PARAM_NUM_SAMPLES_PER_INPUT_FRAME)
 #define ECHONULL_DENOISER_INPUT_FRAME_PARAM NVAFX_PARAM_NUM_SAMPLES_PER_INPUT_FRAME
@@ -64,44 +65,45 @@ void NvafxDenoiser::initialize() {
   };
 
   try {
+    auto& api = NvafxApi::instance();
     if (impl_->model_path.empty() || !std::filesystem::exists(impl_->model_path)) {
       throw std::runtime_error("NvAFX Noise Removal model not found: " +
                                impl_->model_path.string());
     }
-    check(NvAFX_CreateEffect("denoiser", &impl_->handle),
+    check(api.create_effect("denoiser", &impl_->handle),
           "NvAFX_CreateEffect(denoiser)");
     const auto model_utf8 = impl_->model_path.u8string();
     const auto* model = reinterpret_cast<const char*>(model_utf8.c_str());
-    check(NvAFX_SetString(impl_->handle, NVAFX_PARAM_MODEL_PATH, model),
+    check(api.set_string(impl_->handle, NVAFX_PARAM_MODEL_PATH, model),
           "NvAFX_SetString(noise_model_path)");
-    check(NvAFX_SetU32(impl_->handle, NVAFX_PARAM_INPUT_SAMPLE_RATE,
+    check(api.set_u32(impl_->handle, NVAFX_PARAM_INPUT_SAMPLE_RATE,
                        impl_->sample_rate),
           "NvAFX_SetU32(input_sample_rate)");
-    check(NvAFX_SetU32(impl_->handle, NVAFX_PARAM_OUTPUT_SAMPLE_RATE,
+    check(api.set_u32(impl_->handle, NVAFX_PARAM_OUTPUT_SAMPLE_RATE,
                        impl_->sample_rate),
           "NvAFX_SetU32(output_sample_rate)");
-    check(NvAFX_SetFloat(impl_->handle, NVAFX_PARAM_INTENSITY_RATIO,
+    check(api.set_float(impl_->handle, NVAFX_PARAM_INTENSITY_RATIO,
                          impl_->intensity),
           "NvAFX_SetFloat(intensity_ratio)");
-    check(NvAFX_Load(impl_->handle), "NvAFX_Load(denoiser)");
+    check(api.load_effect(impl_->handle), "NvAFX_Load(denoiser)");
 
     DenoiserStatus current;
-    check(NvAFX_GetU32(impl_->handle, NVAFX_PARAM_INPUT_SAMPLE_RATE,
+    check(api.get_u32(impl_->handle, NVAFX_PARAM_INPUT_SAMPLE_RATE,
                        &current.input_sample_rate),
           "NvAFX_GetU32(input_sample_rate)");
-    check(NvAFX_GetU32(impl_->handle, NVAFX_PARAM_OUTPUT_SAMPLE_RATE,
+    check(api.get_u32(impl_->handle, NVAFX_PARAM_OUTPUT_SAMPLE_RATE,
                        &current.output_sample_rate),
           "NvAFX_GetU32(output_sample_rate)");
-    check(NvAFX_GetU32(impl_->handle, NVAFX_PARAM_NUM_INPUT_CHANNELS,
+    check(api.get_u32(impl_->handle, NVAFX_PARAM_NUM_INPUT_CHANNELS,
                        &current.input_channels),
           "NvAFX_GetU32(input_channels)");
-    check(NvAFX_GetU32(impl_->handle, NVAFX_PARAM_NUM_OUTPUT_CHANNELS,
+    check(api.get_u32(impl_->handle, NVAFX_PARAM_NUM_OUTPUT_CHANNELS,
                        &current.output_channels),
           "NvAFX_GetU32(output_channels)");
-    check(NvAFX_GetU32(impl_->handle, ECHONULL_DENOISER_INPUT_FRAME_PARAM,
+    check(api.get_u32(impl_->handle, ECHONULL_DENOISER_INPUT_FRAME_PARAM,
                        &current.input_frame_samples),
           "NvAFX_GetU32(input_frame_samples)");
-    check(NvAFX_GetU32(impl_->handle, ECHONULL_DENOISER_OUTPUT_FRAME_PARAM,
+    check(api.get_u32(impl_->handle, ECHONULL_DENOISER_OUTPUT_FRAME_PARAM,
                        &current.output_frame_samples),
           "NvAFX_GetU32(output_frame_samples)");
     if (current.input_sample_rate != impl_->sample_rate ||
@@ -116,7 +118,7 @@ void NvafxDenoiser::initialize() {
     impl_->status = current;
   } catch (const std::exception& error) {
     if (impl_->handle != nullptr) {
-      NvAFX_DestroyEffect(impl_->handle);
+      NvafxApi::instance().destroy_effect(impl_->handle);
       impl_->handle = nullptr;
     }
     std::scoped_lock lock(impl_->mutex);
@@ -131,8 +133,8 @@ void NvafxDenoiser::reset() noexcept {
 #if ECHONULL_HAS_NVAFX
   std::scoped_lock lock(impl_->mutex);
   if (impl_->handle != nullptr) {
-    NvAFX_Reset(impl_->handle);
-    NvAFX_DestroyEffect(impl_->handle);
+    NvafxApi::instance().reset(impl_->handle);
+    NvafxApi::instance().destroy_effect(impl_->handle);
     impl_->handle = nullptr;
   }
   impl_->status = {};
@@ -148,7 +150,7 @@ void NvafxDenoiser::set_intensity(const float intensity) {
   impl_->intensity = value;
 #if ECHONULL_HAS_NVAFX
   if (impl_->handle != nullptr &&
-      NvAFX_SetFloat(impl_->handle, NVAFX_PARAM_INTENSITY_RATIO, value) !=
+      NvafxApi::instance().set_float(impl_->handle, NVAFX_PARAM_INTENSITY_RATIO, value) !=
           NVAFX_STATUS_SUCCESS) {
     throw std::runtime_error("NvAFX_SetFloat(denoiser intensity) failed");
   }
@@ -172,7 +174,7 @@ void NvafxDenoiser::process(const std::span<const float> input,
   }
   const float* input_buffers[1] = {input.data()};
   float* output_buffers[1] = {output.data()};
-  const NvAFX_Status result = NvAFX_Run(
+  const NvAFX_Status result = NvafxApi::instance().run(
       impl_->handle, input_buffers, output_buffers,
       impl_->status.input_frame_samples, impl_->status.input_channels);
   if (result != NVAFX_STATUS_SUCCESS) {
