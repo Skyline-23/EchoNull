@@ -42,9 +42,6 @@ jobs:
             Authorization = "Bearer $env:NGC_API_KEY"
             Accept = "application/json"
           }
-          $downloadHeaders = @{
-            Authorization = "Bearer $env:NGC_API_KEY"
-          }
           $listing = Invoke-RestMethod `
             -Uri "$resourceUri/files" `
             -Method Get `
@@ -57,10 +54,13 @@ jobs:
           }
 
           $archiveName = [Uri]::EscapeDataString([string]$archive.path)
-          Invoke-WebRequest `
-            -Uri "$resourceUri/files/$archiveName" `
-            -Headers $downloadHeaders `
-            -OutFile afx-sdk-resource.zip
+          curl.exe -fL `
+            -H "Authorization: Bearer $env:NGC_API_KEY" `
+            -o afx-sdk-resource.zip `
+            "$resourceUri/files/$archiveName"
+          if ($LASTEXITCODE -ne 0) {
+            throw "The NGC SDK archive download failed."
+          }
           $actualHash = (Get-FileHash `
             -LiteralPath afx-sdk-resource.zip `
             -Algorithm SHA256).Hash
