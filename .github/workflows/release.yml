@@ -88,7 +88,7 @@ jobs:
           $sdkRoot = Split-Path -Parent (Split-Path -Parent $header.FullName)
           "AFX_SDK_ROOT=$sdkRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Download NVIDIA Noise Removal feature
+      - name: Download NVIDIA AFX features
         shell: pwsh
         env:
           NGC_CLI_API_KEY: ${{ secrets.NGC_CLI_API_KEY }}
@@ -101,25 +101,54 @@ jobs:
             "features/nvafxdenoiser/models/blackwell"
           $runtimeRoot = Join-Path $env:AFX_SDK_ROOT `
             "features/nvafxdenoiser/bin"
+          $aecModelRoot = Join-Path $env:AFX_SDK_ROOT `
+            "features/nvafxaec/models/blackwell"
+          $aecRuntimeRoot = Join-Path $env:AFX_SDK_ROOT `
+            "features/nvafxaec/bin"
+          $aecLicenseRoot = Join-Path $env:AFX_SDK_ROOT `
+            "features/nvafxaec/license"
           $downloads = @(
             @{
+              Effect = "aec"
+              Variant = "2.1.0-48k-blackwell"
+              Names = @("aec_48k.trtpkg", "aec_48k.trtpkg.md5")
+              Destination = $aecModelRoot
+            },
+            @{
+              Effect = "aec"
+              Variant = "2.1.0-dynamic-library"
+              Names = @("nvafxaec.dll", "nvafxaec.dll.md5")
+              Destination = $aecRuntimeRoot
+            },
+            @{
+              Effect = "aec"
+              Variant = "2.1.0-license"
+              Names = @(
+                "NVIDIA-Models-Community-License-2025-04-15.pdf",
+                "NVIDIA-Models-Community-License-2025-04-15.pdf.md5"
+              )
+              Destination = $aecLicenseRoot
+            },
+            @{
+              Effect = "denoiser"
               Variant = "2.1.0-48k-blackwell"
               Names = @("denoiser_48k.trtpkg", "denoiser_48k.trtpkg.md5")
               Destination = $modelRoot
             },
             @{
+              Effect = "denoiser"
               Variant = "2.1.0-dynamic-library"
               Names = @("nvafxdenoiser.dll", "nvafxdenoiser.dll.md5")
               Destination = $runtimeRoot
             }
           )
-          $modelUri = "https://api.ngc.nvidia.com/v2/org/nvidia/team/maxine/models/afx_win_denoiser"
+          $modelRootUri = "https://api.ngc.nvidia.com/v2/org/nvidia/team/maxine/models"
           foreach ($download in $downloads) {
             New-Item -ItemType Directory `
               -Path $download.Destination `
               -Force | Out-Null
             $listing = Invoke-RestMethod `
-              -Uri "$modelUri/$($download.Variant)/files" `
+              -Uri "$modelRootUri/afx_win_$($download.Effect)/$($download.Variant)/files" `
               -Method Get `
               -Headers $headers
             for ($index = 0; $index -lt @($listing.filepath).Count; $index++) {
@@ -135,16 +164,22 @@ jobs:
             "features/nvafxdenoiser/models/blackwell/denoiser_48k.trtpkg"
           $runtime = Join-Path $env:AFX_SDK_ROOT `
             "features/nvafxdenoiser/bin/nvafxdenoiser.dll"
-          foreach ($file in @($model, $runtime)) {
+          $aecModel = Join-Path $env:AFX_SDK_ROOT `
+            "features/nvafxaec/models/blackwell/aec_48k.trtpkg"
+          $aecRuntime = Join-Path $env:AFX_SDK_ROOT `
+            "features/nvafxaec/bin/nvafxaec.dll"
+          $aecLicense = Join-Path $env:AFX_SDK_ROOT `
+            "features/nvafxaec/license/NVIDIA-Models-Community-License-2025-04-15.pdf"
+          foreach ($file in @($aecModel, $aecRuntime, $aecLicense, $model, $runtime)) {
             $checksum = "$file.md5"
             if (-not (Test-Path -LiteralPath $file) -or
                 -not (Test-Path -LiteralPath $checksum)) {
-              throw "A required Noise Removal file was not downloaded."
+              throw "A required NVIDIA AFX feature file was not downloaded."
             }
             $expected = (Get-Content -LiteralPath $checksum -Raw).Trim()
             $actual = (Get-FileHash -LiteralPath $file -Algorithm MD5).Hash
             if ($actual -ine $expected) {
-              throw "A Noise Removal file failed MD5 verification."
+              throw "An NVIDIA AFX feature file failed MD5 verification."
             }
           }
 
