@@ -14,6 +14,7 @@
 #include <thread>
 
 #include "application/engine.hpp"
+#include "bootstrap/live_session.hpp"
 #include "infrastructure/config.hpp"
 #include "infrastructure/nvidia/nvafx_aec.hpp"
 #include "infrastructure/wav.hpp"
@@ -137,16 +138,10 @@ int run_bridge(const echonull::Config& config) {
     hooks.on_frame = [&recorders](const echonull::ProcessedFrame& frame) { recorders->write(frame); };
   }
 
-  while (!g_stop_requested) {
-    try {
-      static_cast<void>(run_once(config, hooks));
-    } catch (const std::exception& error) {
-      std::cerr << "[error] " << error.what() << '\n';
-      if (g_stop_requested) break;
-      std::cerr << "[info] reconnecting audio graph in " << config.reconnect_delay_ms << " ms\n";
-      std::this_thread::sleep_for(std::chrono::milliseconds(config.reconnect_delay_ms));
-    }
-  }
+  echonull::LiveSession session(config, print_snapshot, hooks);
+  session.start();
+  while (!g_stop_requested) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  session.stop();
   return 0;
 }
 

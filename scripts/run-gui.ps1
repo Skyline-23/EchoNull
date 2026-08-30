@@ -1,5 +1,4 @@
 param(
-    [string]$Config = "config/echonull.ini",
     [string]$BuildType = "Release"
 )
 
@@ -18,13 +17,13 @@ $runtimePaths = @(
 )
 $env:PATH = (($runtimePaths + @($env:PATH)) -join ";")
 
-$exe = Join-Path $PSScriptRoot "..\build\$BuildType\echonull-cli.exe"
+$exe = Join-Path $PSScriptRoot "..\build\$BuildType\EchoNull.exe"
 if (-not (Test-Path -LiteralPath $exe)) {
-    $exe = Join-Path $PSScriptRoot "..\build\echonull-cli.exe"
+    $exe = Join-Path $PSScriptRoot "..\build\EchoNull.exe"
 }
 if (-not (Test-Path -LiteralPath $exe)) {
     throw "EchoNull executable not found. Build the project first."
 }
 
-& $exe run --config $Config
-exit $LASTEXITCODE
+Start-Process -FilePath $exe -WorkingDirectory (Join-Path $PSScriptRoot "..")
+

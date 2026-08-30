@@ -42,6 +42,7 @@ target_include_directories(echonull_domain INTERFACE src)
 
 add_library(echonull_application
   src/application/delay_estimator.cpp
+  src/application/engine.cpp
   src/application/erle_meter.cpp
   src/application/sample_queue.cpp
   src/application/timestamped_audio_buffer.cpp)
@@ -55,34 +56,52 @@ endif()
 
 add_library(echonull_infrastructure
   src/infrastructure/config.cpp
+  src/infrastructure/nvidia/nvafx_aec.cpp
   src/infrastructure/wav.cpp
-  src/infrastructure/windows/device_manager.cpp)
+  src/infrastructure/windows/device_manager.cpp
+  src/infrastructure/windows/wasapi_capture.cpp
+  src/infrastructure/windows/wasapi_renderer.cpp)
 
-target_link_libraries(echonull_infrastructure PUBLIC echonull_domain PRIVATE ole32 uuid)
+target_link_libraries(echonull_infrastructure PUBLIC echonull_domain echonull_application PRIVATE ole32 uuid avrt)
 target_include_directories(echonull_infrastructure PUBLIC src)
-target_compile_definitions(echonull_infrastructure PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_definitions(echonull_infrastructure PUBLIC
+  NOMINMAX WIN32_LEAN_AND_MEAN ECHONULL_HAS_NVAFX=${ECHONULL_HAS_NVAFX})
 if(MSVC)
   target_compile_options(echonull_infrastructure PRIVATE /W4 /permissive- /utf-8 /EHsc)
 endif()
 
-add_executable(echonull
-  src/main.cpp
-  src/infrastructure/windows/wasapi_capture.cpp
-  src/infrastructure/windows/wasapi_renderer.cpp
-  src/infrastructure/nvidia/nvafx_aec.cpp
-  src/application/engine.cpp)
+if(ECHONULL_HAS_NVAFX)
+  target_include_directories(echonull_infrastructure PRIVATE "${ECHONULL_NVAFX_INCLUDE_DIR}")
+  target_link_libraries(echonull_infrastructure PRIVATE "${ECHONULL_NVAFX_LIBRARY}")
+endif()
+
+add_library(echonull_bootstrap
+  src/bootstrap/live_session.cpp)
+target_include_directories(echonull_bootstrap PUBLIC src)
+target_link_libraries(echonull_bootstrap PUBLIC echonull_application echonull_infrastructure)
+if(MSVC)
+  target_compile_options(echonull_bootstrap PRIVATE /W4 /permissive- /utf-8 /EHsc)
+endif()
+
+add_executable(echonull src/main.cpp)
 
 target_include_directories(echonull PRIVATE src)
-target_compile_definitions(echonull PRIVATE ECHONULL_HAS_NVAFX=${ECHONULL_HAS_NVAFX})
-target_link_libraries(echonull PRIVATE echonull_application echonull_infrastructure ole32 uuid avrt)
-
-if(ECHONULL_HAS_NVAFX)
-  target_include_directories(echonull PRIVATE "${ECHONULL_NVAFX_INCLUDE_DIR}")
-  target_link_libraries(echonull PRIVATE "${ECHONULL_NVAFX_LIBRARY}")
-endif()
+target_link_libraries(echonull PRIVATE echonull_bootstrap)
+set_target_properties(echonull PROPERTIES OUTPUT_NAME "echonull-cli")
 
 if(MSVC)
   target_compile_options(echonull PRIVATE /W4 /permissive- /utf-8 /EHsc)
+endif()
+
+add_executable(echonull_gui WIN32
+  src/presentation/windows/gui_main.cpp)
+target_include_directories(echonull_gui PRIVATE src)
+target_link_libraries(echonull_gui PRIVATE echonull_bootstrap comctl32)
+set_target_properties(echonull_gui PROPERTIES
+  OUTPUT_NAME "EchoNull"
+  VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+if(MSVC)
+  target_compile_options(echonull_gui PRIVATE /W4 /permissive- /utf-8 /EHsc)
 endif()
 
 if(ECHONULL_BUILD_TESTS)

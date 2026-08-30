@@ -42,7 +42,7 @@ infrastructure
   WASAPI capture/render, NvAFX adapter, config and WAV adapters
       ^
 presentation
-  CLI today; native Windows control UI is the next adapter
+  native Windows control UI and CLI adapters
 ```
 
 Application code has no dependency on Win32, COM, WASAPI, or NVIDIA headers.
@@ -80,7 +80,7 @@ Without the SDK, the project still builds device listing and the unit tests. The
 List endpoint names and stable IDs:
 
 ```powershell
-.\build\Release\echonull.exe devices
+.\build\Release\echonull-cli.exe devices
 ```
 
 Edit `config/echonull.ini`. Device selectors may be `default`, an endpoint ID,
@@ -93,6 +93,18 @@ Run with SDK runtime paths prepared:
 .\scripts\run.ps1
 ```
 
+Or launch the native control window from the repository root after preparing
+the same SDK runtime paths:
+
+```powershell
+.\scripts\run-gui.ps1
+```
+
+The UI enumerates active capture/render endpoints, starts and stops the shared
+application session, and displays delay confidence, processing latency, ERLE,
+frame counts, underruns, and output drops. It contains no WASAPI or NvAFX logic;
+those remain infrastructure adapters behind application ports.
+
 The audio clients use 48 kHz mono float in WASAPI shared mode with Windows'
 high-quality format conversion enabled. Capture packet QPC timestamps form the
 common timeline, so long-running device-clock drift does not accumulate as a
@@ -104,7 +116,7 @@ speaker-to-microphone delay without growing an arbitrary buffer.
 Use a 48 kHz PCM or float WAV containing far-end speech:
 
 ```powershell
-.\build\Release\echonull.exe validate `
+.\build\Release\echonull-cli.exe validate `
   --config config\echonull.ini `
   --test-wav C:\audio\far-end-speech.wav `
   --output out\validation
@@ -128,4 +140,3 @@ They are governed by NVIDIA's SDK terms and are not redistributable merely under
 this repository's license. Keep application packaging separate until those terms
 and the [NVIDIA Maxine branding guidelines](https://www.nvidia.com/maxine-sdk-guidelines)
 have been reviewed for the intended distribution.
-
