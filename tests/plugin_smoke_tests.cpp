@@ -121,6 +121,36 @@ int wmain(const int argc, wchar_t** argv) {
     require(output_left == left && output_right == right,
             "disabled AEC is not bit-transparent");
 
+    effect->set_parameter(effect, 1, 1.0F);
+    constexpr std::size_t kMaximumBlock = 1024;
+    std::vector<float> steady_left(kMaximumBlock, 0.25F);
+    std::vector<float> steady_right(kMaximumBlock, 0.25F);
+    std::vector<float> steady_output_left(kMaximumBlock, 0.0F);
+    std::vector<float> steady_output_right(kMaximumBlock, 0.0F);
+    const std::size_t block_sizes[] = {113, 509, 37, 1024, 211, 960, 73};
+    std::size_t rendered_samples = 0;
+    for (std::size_t block_index = 0; rendered_samples < 192'000;
+         ++block_index) {
+      const auto block_size = block_sizes[
+          block_index % std::size(block_sizes)];
+      const float* steady_inputs[2] = {steady_left.data(), steady_right.data()};
+      float* steady_outputs[2] = {steady_output_left.data(),
+                                  steady_output_right.data()};
+      effect->process_float(effect, steady_inputs, steady_outputs,
+                            static_cast<int32_t>(block_size));
+      if (rendered_samples > 24'000) {
+        for (std::size_t sample = 0; sample < block_size; ++sample) {
+          require(std::isfinite(steady_output_left[sample]) &&
+                      std::isfinite(steady_output_right[sample]),
+                  "96 kHz variable-block output is not finite");
+          require(steady_output_left[sample] > 0.20F &&
+                      steady_output_right[sample] > 0.20F,
+                  "96 kHz variable-block processing inserted an audio gap");
+        }
+      }
+      rendered_samples += block_size;
+    }
+
     effect->control(effect, VST_EFFECT_OPCODE_PROCESS_END, 0, 0, nullptr, 0.0F);
     effect->control(effect, VST_EFFECT_OPCODE_SUSPEND_RESUME, 0, 0, nullptr, 0.0F);
     effect->control(effect, VST_EFFECT_OPCODE_DESTROY, 0, 0, nullptr, 0.0F);

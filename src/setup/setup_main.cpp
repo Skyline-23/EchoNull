@@ -1,5 +1,6 @@
 #include <Windows.h>
 #include <CommCtrl.h>
+#include <Sddl.h>
 #include <TlHelp32.h>
 
 #include <algorithm>
@@ -457,6 +458,30 @@ void extract_plugin(const std::filesystem::path& setup,
   }
 }
 
+void prepare_diagnostic_log_directory() noexcept {
+  const DWORD required = GetEnvironmentVariableW(L"ProgramData", nullptr, 0);
+  if (required == 0) return;
+  std::wstring root(required, L'\0');
+  const DWORD written = GetEnvironmentVariableW(
+      L"ProgramData", root.data(), static_cast<DWORD>(root.size()));
+  if (written == 0 || written >= root.size()) return;
+  root.resize(written);
+  const auto directory = std::filesystem::path(root) / L"EchoNull" / L"Logs";
+  std::error_code error;
+  std::filesystem::create_directories(directory, error);
+  if (error) return;
+
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+          L"(A;OICI;0x1301bf;;;LS)(A;OICI;GR;;;BU)",
+          SDDL_REVISION_1, &descriptor, nullptr)) {
+    return;
+  }
+  SetFileSecurityW(directory.c_str(), DACL_SECURITY_INFORMATION, descriptor);
+  LocalFree(descriptor);
+}
+
 int choose_action(const bool installed) {
   const TASKDIALOG_BUTTON buttons[] = {
       {100, installed ? L"Repair / Update EchoNull"
@@ -511,6 +536,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
       AudioServiceGuard audio;
       terminate_audiodg();
       if (action == 100) {
+        prepare_diagnostic_log_directory();
         extract_plugin(module_path(), paths.plugin);
         install_configuration(paths.config);
       } else if (action == 101) {

@@ -74,6 +74,7 @@ add_library(echonull_infrastructure
   src/infrastructure/nvidia/packaged_runtime.cpp
   src/infrastructure/text_encoding.cpp
   src/infrastructure/windows/device_manager.cpp
+  src/infrastructure/windows/diagnostic_log.cpp
   src/infrastructure/windows/equalizer_apo.cpp
   src/infrastructure/windows/realtime_audio_thread.cpp
   src/infrastructure/windows/telemetry_bus.cpp

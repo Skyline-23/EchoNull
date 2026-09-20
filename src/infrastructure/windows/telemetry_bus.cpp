@@ -14,10 +14,10 @@
 namespace echonull {
 namespace {
 
-constexpr wchar_t kGlobalMappingName[] = L"Global\\EchoNull.Telemetry.v2";
-constexpr wchar_t kLocalMappingName[] = L"Local\\EchoNull.Telemetry.v2";
+constexpr wchar_t kGlobalMappingName[] = L"Global\\EchoNull.Telemetry.v3";
+constexpr wchar_t kLocalMappingName[] = L"Local\\EchoNull.Telemetry.v3";
 constexpr std::uint32_t kMagic = 0x454E544DU;  // ENTM
-constexpr std::uint32_t kVersion = 1;
+constexpr std::uint32_t kVersion = 2;
 
 struct SharedTelemetry {
   std::uint32_t magic = 0;

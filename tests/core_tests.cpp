@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -9,6 +11,7 @@
 #include "application/streaming_resampler.hpp"
 #include "application/timestamped_audio_buffer.hpp"
 #include "infrastructure/equalizer_apo_config.hpp"
+#include "infrastructure/windows/diagnostic_log.hpp"
 #include "infrastructure/windows/telemetry_bus.hpp"
 
 namespace {
@@ -122,7 +125,8 @@ void test_telemetry_bus_roundtrip() {
   writer.open();
   echonull::TelemetryBusReader reader;
   require(reader.open(), "telemetry reader could not open the writer mapping");
-  const echonull::TelemetrySnapshot expected{now_hns, 0.625F, 3, 1, 0, 0};
+  const echonull::TelemetrySnapshot expected{
+      now_hns, 0.625F, 3, 1, 0, 0, 7, 5, 3, 11};
   writer.publish(expected);
   const auto actual = reader.read_latest();
   require(actual.has_value(), "telemetry bus returned no fresh snapshot");
@@ -131,6 +135,12 @@ void test_telemetry_bus_roundtrip() {
   require(actual->runtime_state == expected.runtime_state &&
               actual->noise_state == expected.noise_state,
           "telemetry bus changed the runtime state");
+  require(actual->fallback_frames == expected.fallback_frames &&
+              actual->gpu_deadline_misses == expected.gpu_deadline_misses &&
+              actual->queue_overruns == expected.queue_overruns &&
+              actual->output_underrun_samples ==
+                  expected.output_underrun_samples,
+          "telemetry bus changed the real-time diagnostics");
 
   auto stale = expected;
   stale.timestamp_hns = now_hns - 30'000'000;
@@ -140,6 +150,43 @@ void test_telemetry_bus_roundtrip() {
   writer.publish(expected);
   require(reader.read_latest().has_value(),
           "telemetry reader did not reconnect after a stale mapping");
+}
+
+void test_async_diagnostic_log() {
+  std::wstring temporary(32'768, L'\0');
+  const DWORD length = GetTempPathW(static_cast<DWORD>(temporary.size()),
+                                    temporary.data());
+  require(length != 0 && length < temporary.size(),
+          "diagnostic test could not resolve the temp directory");
+  temporary.resize(length);
+  const auto directory = std::filesystem::path(temporary) /
+                         (L"EchoNull-log-test-" +
+                          std::to_wstring(GetCurrentProcessId()));
+  std::filesystem::remove_all(directory);
+  require(SetEnvironmentVariableW(L"ECHONULL_LOG_ROOT",
+                                  directory.c_str()) != FALSE,
+          "diagnostic test could not set its log directory");
+  {
+    echonull::AsyncDiagnosticLog log;
+    log.open();
+    log.publish(echonull::TelemetrySnapshot{
+        60'000'000, 0.5F, 5, 3, 3, 0, 4, 2, 1, 17});
+    log.close();
+  }
+  SetEnvironmentVariableW(L"ECHONULL_LOG_ROOT", nullptr);
+  std::ifstream input(directory / L"EchoNull.log", std::ios::binary);
+  const std::string contents{std::istreambuf_iterator<char>(input),
+                             std::istreambuf_iterator<char>()};
+  require(contents.find("ERROR runtime=overloaded") != std::string::npos &&
+              contents.find("aec_error=runtime_or_gpu") !=
+                  std::string::npos,
+          "diagnostic log omitted the runtime error");
+  require(contents.find("dry_fallback_frames=4") != std::string::npos &&
+              contents.find("output_underrun_samples=17") !=
+                  std::string::npos,
+          "diagnostic log omitted the real-time counters");
+  input.close();
+  std::filesystem::remove_all(directory);
 }
 
 void test_equalizer_apo_capture_scope() {
@@ -180,6 +227,7 @@ int main() {
     test_streaming_resampler_is_chunk_invariant();
     test_streaming_resampler_equal_rate_is_bit_exact();
     test_telemetry_bus_roundtrip();
+    test_async_diagnostic_log();
     test_equalizer_apo_capture_scope();
     std::cout << "All EchoNull core tests passed.\n";
     return 0;

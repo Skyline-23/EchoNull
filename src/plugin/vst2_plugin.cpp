@@ -223,7 +223,22 @@ std::pair<std::wstring, bool> runtime_status(
 void refresh_editor(EffectInstance& value) {
   if (!value.editor) return;
   if (const auto telemetry = value.telemetry_reader.read_latest()) {
-    const auto [status, ok] = runtime_status(value, *telemetry);
+    auto [status, ok] = runtime_status(value, *telemetry);
+    if (static_cast<echonull::PluginRuntimeState>(telemetry->runtime_state) ==
+            echonull::PluginRuntimeState::overloaded ||
+        static_cast<echonull::NoiseRuntimeState>(telemetry->noise_state) ==
+            echonull::NoiseRuntimeState::overloaded) {
+      status += L" · DRY FALLBACK " +
+                std::to_wstring(telemetry->fallback_frames);
+      if (telemetry->gpu_deadline_misses != 0) {
+        status += L" · GPU LATE " +
+                  std::to_wstring(telemetry->gpu_deadline_misses);
+      }
+      if (telemetry->output_underrun_samples != 0) {
+        status += L" · BUFFER " +
+                  std::to_wstring(telemetry->output_underrun_samples);
+      }
+    }
     value.editor->idle(telemetry->output_level, status, ok);
     return;
   }
