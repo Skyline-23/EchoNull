@@ -139,64 +139,183 @@ void remove_configuration(const std::filesystem::path& path) {
 class AudioServiceGuard {
  public:
   AudioServiceGuard() {
-    manager_ = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
-    if (manager_ == nullptr) throw windows_error("Cannot open Service Manager");
-    service_ = OpenServiceW(manager_, L"Audiosrv",
-                            SERVICE_QUERY_STATUS | SERVICE_STOP | SERVICE_START);
-    if (service_ == nullptr) throw windows_error("Cannot open Windows Audio");
-    SERVICE_STATUS_PROCESS status{};
-    DWORD bytes = 0;
-    if (!QueryServiceStatusEx(service_, SC_STATUS_PROCESS_INFO,
-                              reinterpret_cast<BYTE*>(&status), sizeof(status),
-                              &bytes)) {
-      throw windows_error("Cannot query Windows Audio");
-    }
-    was_running_ = status.dwCurrentState != SERVICE_STOPPED;
-    if (was_running_ && status.dwCurrentState != SERVICE_STOP_PENDING) {
-      SERVICE_STATUS ignored{};
-      if (!ControlService(service_, SERVICE_CONTROL_STOP, &ignored) &&
-          GetLastError() != ERROR_SERVICE_NOT_ACTIVE) {
-        throw windows_error("Cannot stop Windows Audio");
+    try {
+      manager_ = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+      if (manager_ == nullptr) throw windows_error("Cannot open Service Manager");
+      service_ = OpenServiceW(manager_, L"Audiosrv",
+                              SERVICE_ENUMERATE_DEPENDENTS |
+                                  SERVICE_QUERY_STATUS | SERVICE_STOP |
+                                  SERVICE_START);
+      if (service_ == nullptr) throw windows_error("Cannot open Windows Audio");
+      const auto status = query_status(service_);
+      was_running_ = status.dwCurrentState != SERVICE_STOPPED;
+      if (!was_running_) return;
+
+      stop_active_dependents(service_);
+      if (status.dwCurrentState != SERVICE_STOP_PENDING) {
+        SERVICE_STATUS ignored{};
+        if (!ControlService(service_, SERVICE_CONTROL_STOP, &ignored) &&
+            GetLastError() != ERROR_SERVICE_NOT_ACTIVE) {
+          throw windows_error("Cannot stop Windows Audio");
+        }
       }
+      if (!wait_for(service_, SERVICE_STOPPED)) {
+        SetLastError(ERROR_TIMEOUT);
+        throw windows_error("Windows Audio did not stop in time");
+      }
+    } catch (...) {
+      restore_services();
+      close_handles();
+      throw;
     }
-    wait_for(SERVICE_STOPPED);
   }
 
   ~AudioServiceGuard() {
-    if (was_running_ && service_ != nullptr) {
-      if (!StartServiceW(service_, 0, nullptr) &&
-          GetLastError() != ERROR_SERVICE_ALREADY_RUNNING) {
-        // The installer reports file/configuration failures. Windows can restore
-        // its audio service independently if this best-effort restart fails.
-      }
-      wait_for(SERVICE_RUNNING);
-    }
-    if (service_ != nullptr) CloseServiceHandle(service_);
-    if (manager_ != nullptr) CloseServiceHandle(manager_);
+    restore_services();
+    close_handles();
   }
 
   AudioServiceGuard(const AudioServiceGuard&) = delete;
   AudioServiceGuard& operator=(const AudioServiceGuard&) = delete;
 
  private:
-  void wait_for(const DWORD target) const noexcept {
-    if (service_ == nullptr) return;
+  SERVICE_STATUS_PROCESS query_status(const SC_HANDLE service) const {
+    SERVICE_STATUS_PROCESS status{};
+    DWORD bytes = 0;
+    if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
+                              reinterpret_cast<BYTE*>(&status), sizeof(status),
+                              &bytes)) {
+      throw windows_error("Cannot query a Windows Audio dependent service");
+    }
+    return status;
+  }
+
+  bool wait_for(const SC_HANDLE service, const DWORD target) const noexcept {
+    if (service == nullptr) return false;
     for (int attempt = 0; attempt < 100; ++attempt) {
       SERVICE_STATUS_PROCESS status{};
       DWORD bytes = 0;
-      if (!QueryServiceStatusEx(service_, SC_STATUS_PROCESS_INFO,
+      if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
                                 reinterpret_cast<BYTE*>(&status), sizeof(status),
-                                &bytes) ||
-          status.dwCurrentState == target) {
-        return;
-      }
+                                &bytes)) return false;
+      if (status.dwCurrentState == target) return true;
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return false;
+  }
+
+  std::vector<std::wstring> active_dependents(const SC_HANDLE service) const {
+    DWORD bytes = 0;
+    DWORD count = 0;
+    if (EnumDependentServicesW(service, SERVICE_ACTIVE, nullptr, 0, &bytes,
+                               &count)) {
+      return {};
+    }
+    if (GetLastError() != ERROR_MORE_DATA) {
+      throw windows_error("Cannot enumerate Windows Audio dependent services");
+    }
+    std::vector<BYTE> buffer(bytes);
+    if (!EnumDependentServicesW(
+            service, SERVICE_ACTIVE,
+            reinterpret_cast<LPENUM_SERVICE_STATUSW>(buffer.data()), bytes,
+            &bytes, &count)) {
+      throw windows_error("Cannot enumerate Windows Audio dependent services");
+    }
+    const auto* entries =
+        reinterpret_cast<const ENUM_SERVICE_STATUSW*>(buffer.data());
+    std::vector<std::wstring> names;
+    names.reserve(count);
+    for (DWORD index = 0; index < count; ++index) {
+      names.emplace_back(entries[index].lpServiceName);
+    }
+    return names;
+  }
+
+  void stop_active_dependents(const SC_HANDLE service) {
+    for (const auto& name : active_dependents(service)) {
+      SC_HANDLE dependent = OpenServiceW(
+          manager_, name.c_str(), SERVICE_ENUMERATE_DEPENDENTS |
+                                      SERVICE_QUERY_STATUS | SERVICE_STOP);
+      if (dependent == nullptr) {
+        throw windows_error("Cannot open a Windows Audio dependent service");
+      }
+      try {
+        stop_active_dependents(dependent);
+        const auto status = query_status(dependent);
+        if (status.dwCurrentState != SERVICE_STOPPED) {
+          stopped_dependents_.push_back(name);
+          if (status.dwCurrentState != SERVICE_STOP_PENDING) {
+            SERVICE_STATUS ignored{};
+            if (!ControlService(dependent, SERVICE_CONTROL_STOP, &ignored) &&
+                GetLastError() != ERROR_SERVICE_NOT_ACTIVE) {
+              throw windows_error(
+                  "Cannot stop a service that depends on Windows Audio");
+            }
+          }
+          if (!wait_for(dependent, SERVICE_STOPPED)) {
+            SetLastError(ERROR_TIMEOUT);
+            throw windows_error(
+                "A service that depends on Windows Audio did not stop in time");
+          }
+        }
+      } catch (...) {
+        CloseServiceHandle(dependent);
+        throw;
+      }
+      CloseServiceHandle(dependent);
+    }
+  }
+
+  void restart_service(const SC_HANDLE service) const noexcept {
+    SERVICE_STATUS_PROCESS status{};
+    DWORD bytes = 0;
+    if (QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
+                             reinterpret_cast<BYTE*>(&status), sizeof(status),
+                             &bytes)) {
+      if (status.dwCurrentState == SERVICE_RUNNING) return;
+      if (status.dwCurrentState == SERVICE_STOP_PENDING) {
+        wait_for(service, SERVICE_STOPPED);
+      }
+    }
+    if (StartServiceW(service, 0, nullptr) ||
+        GetLastError() == ERROR_SERVICE_ALREADY_RUNNING) {
+      wait_for(service, SERVICE_RUNNING);
+    }
+  }
+
+  void restore_services() noexcept {
+    if (was_running_ && service_ != nullptr) {
+      restart_service(service_);
+    }
+    if (manager_ != nullptr) {
+      for (auto service_name = stopped_dependents_.rbegin();
+           service_name != stopped_dependents_.rend(); ++service_name) {
+        const SC_HANDLE dependent =
+            OpenServiceW(manager_, service_name->c_str(),
+                         SERVICE_QUERY_STATUS | SERVICE_START);
+        if (dependent == nullptr) continue;
+        restart_service(dependent);
+        CloseServiceHandle(dependent);
+      }
+    }
+    stopped_dependents_.clear();
+  }
+
+  void close_handles() noexcept {
+    if (service_ != nullptr) {
+      CloseServiceHandle(service_);
+      service_ = nullptr;
+    }
+    if (manager_ != nullptr) {
+      CloseServiceHandle(manager_);
+      manager_ = nullptr;
     }
   }
 
   SC_HANDLE manager_ = nullptr;
   SC_HANDLE service_ = nullptr;
   bool was_running_ = false;
+  std::vector<std::wstring> stopped_dependents_;
 };
 
 std::vector<DWORD> matching_processes(const std::filesystem::path& executable) {

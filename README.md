@@ -103,7 +103,9 @@ NVIDIA headers.
 
 2. Run setup and choose **Install EchoNull**. It copies the self-contained DLL
    and scopes the plug-in with `If: stage == "capture"`; no manual Stage row is
-   required. The same setup file can repair, update, or remove EchoNull.
+   required. The same setup file can repair, update, or remove EchoNull. Setup
+   temporarily stops active services that depend on Windows Audio (including
+   vendor audio helpers) and restores them after the plug-in is replaced.
 3. Open Equalizer APO Device Selector. Enable capture processing on the existing
    microphone and post-mix processing on playback devices you want listed in
    the selector.
