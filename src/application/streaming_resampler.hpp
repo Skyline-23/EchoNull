@@ -21,6 +21,7 @@ class StreamingResampler {
                      std::size_t half_filter_width = 16);
 
   [[nodiscard]] ResampledAudio push(std::span<const float> input);
+  double push_into(std::span<const float> input, std::vector<float>& output);
   void reset();
 
   [[nodiscard]] std::uint32_t input_sample_rate() const { return input_sample_rate_; }
@@ -28,14 +29,18 @@ class StreamingResampler {
   [[nodiscard]] std::uint64_t input_frames_received() const { return input_frames_received_; }
 
  private:
+  void prepare_kernel_table();
   [[nodiscard]] float interpolate(double position) const;
   void discard_consumed_input();
 
   std::uint32_t input_sample_rate_ = 0;
   std::uint32_t output_sample_rate_ = 0;
   std::size_t half_filter_width_ = 0;
+  bool passthrough_ = false;
   double input_frames_per_output_frame_ = 1.0;
   double cutoff_ = 1.0;
+  static constexpr std::size_t kPhaseCount = 1024;
+  std::vector<float> kernel_table_;
   std::vector<float> buffer_;
   std::int64_t buffer_start_frame_ = 0;
   double next_input_position_ = 0.0;

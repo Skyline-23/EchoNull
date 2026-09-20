@@ -5,6 +5,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 #include "infrastructure/windows/wasapi_loopback.hpp"
 
@@ -13,7 +14,7 @@ int wmain(const int argc, wchar_t** argv) {
     const std::wstring endpoint = argc > 1 ? argv[1] : L"default";
     std::atomic<std::uint64_t> packets{0};
     echonull::WasapiLoopbackCapture capture(endpoint);
-    capture.start([&](std::int64_t, std::span<const float>, bool) {
+    capture.start([&](std::int64_t, std::vector<float>, bool) {
       ++packets;
     });
     const auto deadline = std::chrono::steady_clock::now() +

@@ -1,6 +1,7 @@
 #include "infrastructure/nvidia/nvafx_denoiser.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -27,7 +28,8 @@ namespace echonull {
 
 struct NvafxDenoiser::Impl {
   std::vector<std::filesystem::path> model_paths;
-  float intensity = 1.0F;
+  std::atomic<float> requested_intensity{1.0F};
+  float applied_intensity = 1.0F;
   std::uint32_t sample_rate = kSampleRate;
   mutable std::mutex mutex;
   DenoiserStatus status;
@@ -41,7 +43,8 @@ NvafxDenoiser::NvafxDenoiser(std::vector<std::filesystem::path> model_paths,
                              const std::uint32_t sample_rate)
     : impl_(std::make_unique<Impl>()) {
   impl_->model_paths = std::move(model_paths);
-  impl_->intensity = std::clamp(intensity, 0.0F, 1.0F);
+  impl_->requested_intensity.store(std::clamp(intensity, 0.0F, 1.0F),
+                                   std::memory_order_relaxed);
   impl_->sample_rate = sample_rate;
 }
 
@@ -83,8 +86,9 @@ void NvafxDenoiser::initialize() {
     check(api.set_u32(impl_->handle, NVAFX_PARAM_OUTPUT_SAMPLE_RATE,
                        impl_->sample_rate),
           "NvAFX_SetU32(output_sample_rate)");
-    check(api.set_float(impl_->handle, NVAFX_PARAM_INTENSITY_RATIO,
-                         impl_->intensity),
+    const float intensity =
+        impl_->requested_intensity.load(std::memory_order_relaxed);
+    check(api.set_float(impl_->handle, NVAFX_PARAM_INTENSITY_RATIO, intensity),
           "NvAFX_SetFloat(intensity_ratio)");
     check(api.load_effect(impl_->handle), "NvAFX_Load(denoiser)");
 
@@ -116,6 +120,7 @@ void NvafxDenoiser::initialize() {
     }
     current.ready = true;
     std::scoped_lock lock(impl_->mutex);
+    impl_->applied_intensity = intensity;
     impl_->status = current;
     return;
   } catch (const std::exception& error) {
@@ -149,15 +154,7 @@ void NvafxDenoiser::reset() noexcept {
 
 void NvafxDenoiser::set_intensity(const float intensity) {
   const float value = std::clamp(intensity, 0.0F, 1.0F);
-  std::scoped_lock lock(impl_->mutex);
-  impl_->intensity = value;
-#if ECHONULL_HAS_NVAFX
-  if (impl_->handle != nullptr &&
-      NvafxApi::instance().set_float(impl_->handle, NVAFX_PARAM_INTENSITY_RATIO, value) !=
-          NVAFX_STATUS_SUCCESS) {
-    throw std::runtime_error("NvAFX_SetFloat(denoiser intensity) failed");
-  }
-#endif
+  impl_->requested_intensity.store(value, std::memory_order_relaxed);
 }
 
 void NvafxDenoiser::process(const std::span<const float> input,
@@ -174,6 +171,16 @@ void NvafxDenoiser::process(const std::span<const float> input,
   if (input.size() != impl_->status.input_frame_samples ||
       output.size() != impl_->status.output_frame_samples) {
     throw std::runtime_error("NvAFX Denoiser frame size mismatch");
+  }
+  const float requested_intensity =
+      impl_->requested_intensity.load(std::memory_order_relaxed);
+  if (requested_intensity != impl_->applied_intensity) {
+    if (NvafxApi::instance().set_float(
+            impl_->handle, NVAFX_PARAM_INTENSITY_RATIO,
+            requested_intensity) != NVAFX_STATUS_SUCCESS) {
+      throw std::runtime_error("NvAFX_SetFloat(denoiser intensity) failed");
+    }
+    impl_->applied_intensity = requested_intensity;
   }
   const float* input_buffers[1] = {input.data()};
   float* output_buffers[1] = {output.data()};

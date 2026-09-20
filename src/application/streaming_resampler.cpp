@@ -30,53 +30,111 @@ StreamingResampler::StreamingResampler(const std::uint32_t input_sample_rate,
   }
   input_frames_per_output_frame_ =
       static_cast<double>(input_sample_rate_) / static_cast<double>(output_sample_rate_);
+  passthrough_ = input_sample_rate_ == output_sample_rate_;
   cutoff_ = std::min(1.0, static_cast<double>(output_sample_rate_) /
                               static_cast<double>(input_sample_rate_)) * 0.94;
+  if (!passthrough_) prepare_kernel_table();
   reset();
 }
 
 void StreamingResampler::reset() {
-  buffer_.assign(half_filter_width_, 0.0F);
-  buffer_start_frame_ = -static_cast<std::int64_t>(half_filter_width_);
+  if (passthrough_) {
+    buffer_.clear();
+    buffer_start_frame_ = 0;
+  } else {
+    buffer_.assign(half_filter_width_, 0.0F);
+    buffer_start_frame_ = -static_cast<std::int64_t>(half_filter_width_);
+  }
   next_input_position_ = 0.0;
   input_frames_received_ = 0;
 }
 
 ResampledAudio StreamingResampler::push(const std::span<const float> input) {
+  ResampledAudio result;
+  result.first_input_frame = push_into(input, result.samples);
+  return result;
+}
+
+double StreamingResampler::push_into(const std::span<const float> input,
+                                     std::vector<float>& output) {
+  output.clear();
+  if (passthrough_) {
+    const double first_input_frame =
+        static_cast<double>(input_frames_received_);
+    output.assign(input.begin(), input.end());
+    input_frames_received_ += input.size();
+    next_input_position_ = static_cast<double>(input_frames_received_);
+    return first_input_frame;
+  }
+
   buffer_.insert(buffer_.end(), input.begin(), input.end());
   input_frames_received_ += input.size();
 
-  ResampledAudio result;
-  result.first_input_frame = next_input_position_;
+  const double first_input_frame = next_input_position_;
+  output.reserve(static_cast<std::size_t>(std::ceil(
+      (static_cast<double>(input.size()) + 1.0) /
+      input_frames_per_output_frame_)));
   const auto last_available_frame =
       buffer_start_frame_ + static_cast<std::int64_t>(buffer_.size()) - 1;
   while (static_cast<std::int64_t>(std::floor(next_input_position_)) +
              static_cast<std::int64_t>(half_filter_width_) <= last_available_frame) {
-    result.samples.push_back(interpolate(next_input_position_));
+    output.push_back(interpolate(next_input_position_));
     next_input_position_ += input_frames_per_output_frame_;
   }
   discard_consumed_input();
-  return result;
+  return first_input_frame;
+}
+
+void StreamingResampler::prepare_kernel_table() {
+  const std::size_t tap_count = half_filter_width_ * 2;
+  kernel_table_.resize(kPhaseCount * tap_count);
+  for (std::size_t phase = 0; phase < kPhaseCount; ++phase) {
+    const double fraction = static_cast<double>(phase) /
+                            static_cast<double>(kPhaseCount);
+    double weight_sum = 0.0;
+    for (std::size_t tap = 0; tap < tap_count; ++tap) {
+      const auto frame_offset =
+          static_cast<std::int64_t>(tap) -
+          static_cast<std::int64_t>(half_filter_width_) + 1;
+      const double distance = fraction - static_cast<double>(frame_offset);
+      const double normalized_distance =
+          distance / static_cast<double>(half_filter_width_);
+      double weight = 0.0;
+      if (std::abs(normalized_distance) < 1.0) {
+        const double window =
+            0.5 + 0.5 * std::cos(std::numbers::pi * normalized_distance);
+        weight = cutoff_ * sinc(cutoff_ * distance) * window;
+      }
+      kernel_table_[phase * tap_count + tap] = static_cast<float>(weight);
+      weight_sum += weight;
+    }
+    if (std::abs(weight_sum) > 1.0e-12) {
+      for (std::size_t tap = 0; tap < tap_count; ++tap) {
+        kernel_table_[phase * tap_count + tap] = static_cast<float>(
+            static_cast<double>(kernel_table_[phase * tap_count + tap]) /
+            weight_sum);
+      }
+    }
+  }
 }
 
 float StreamingResampler::interpolate(const double position) const {
   const auto center = static_cast<std::int64_t>(std::floor(position));
-  const auto half_width = static_cast<std::int64_t>(half_filter_width_);
+  const double fraction = position - static_cast<double>(center);
+  const std::size_t phase = std::min(
+      static_cast<std::size_t>(fraction * static_cast<double>(kPhaseCount)),
+      kPhaseCount - 1);
+  const std::size_t tap_count = half_filter_width_ * 2;
+  const float* weights = kernel_table_.data() + phase * tap_count;
   double weighted_sum = 0.0;
-  double weight_sum = 0.0;
-  for (std::int64_t frame = center - half_width + 1;
-       frame <= center + half_width; ++frame) {
-    const double distance = position - static_cast<double>(frame);
-    const double normalized_distance = distance / static_cast<double>(half_filter_width_);
-    if (std::abs(normalized_distance) >= 1.0) continue;
-    const double window = 0.5 + 0.5 * std::cos(std::numbers::pi * normalized_distance);
-    const double weight = cutoff_ * sinc(cutoff_ * distance) * window;
+  const auto first_frame = center -
+                           static_cast<std::int64_t>(half_filter_width_) + 1;
+  for (std::size_t tap = 0; tap < tap_count; ++tap) {
+    const auto frame = first_frame + static_cast<std::int64_t>(tap);
     const auto index = static_cast<std::size_t>(frame - buffer_start_frame_);
-    weighted_sum += static_cast<double>(buffer_[index]) * weight;
-    weight_sum += weight;
+    weighted_sum += static_cast<double>(buffer_[index]) * weights[tap];
   }
-  if (std::abs(weight_sum) < 1.0e-12) return 0.0F;
-  return static_cast<float>(weighted_sum / weight_sum);
+  return static_cast<float>(weighted_sum);
 }
 
 void StreamingResampler::discard_consumed_input() {

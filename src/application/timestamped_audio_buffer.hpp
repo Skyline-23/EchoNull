@@ -16,7 +16,7 @@ class TimestampedAudioBuffer {
   explicit TimestampedAudioBuffer(std::uint32_t capacity_ms,
                                   std::uint32_t sample_rate = kSampleRate);
 
-  void push(std::int64_t start_hns, std::span<const float> samples);
+  void push(std::int64_t start_hns, std::vector<float> samples);
   double read(std::int64_t start_hns, std::span<float> output) const;
   [[nodiscard]] std::int64_t earliest_hns() const;
   [[nodiscard]] std::int64_t latest_hns() const;

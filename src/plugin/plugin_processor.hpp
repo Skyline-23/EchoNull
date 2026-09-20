@@ -15,8 +15,9 @@ enum class PluginRuntimeState {
   aec_active,
   bypassed,
   error,
+  overloaded,
 };
-enum class NoiseRuntimeState { disabled, active, error };
+enum class NoiseRuntimeState { disabled, active, error, overloaded };
 enum class PluginErrorReason {
   none,
   package,

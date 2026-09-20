@@ -90,6 +90,25 @@ void test_streaming_resampler_is_chunk_invariant() {
   }
 }
 
+void test_streaming_resampler_equal_rate_is_bit_exact() {
+  std::vector<float> input(2048);
+  for (std::size_t index = 0; index < input.size(); ++index) {
+    input[index] = static_cast<float>(index % 257) / 128.0F - 1.0F;
+  }
+
+  echonull::StreamingResampler resampler(48000, 48000);
+  std::vector<float> actual;
+  for (std::size_t offset = 0; offset < input.size(); offset += 127) {
+    const auto count = std::min<std::size_t>(127, input.size() - offset);
+    auto result = resampler.push(
+        std::span<const float>(input).subspan(offset, count));
+    require(result.first_input_frame == static_cast<double>(offset),
+            "equal-rate resampler changed the stream position");
+    actual.insert(actual.end(), result.samples.begin(), result.samples.end());
+  }
+  require(actual == input, "equal-rate resampler changed audio samples");
+}
+
 void test_telemetry_bus_roundtrip() {
   LARGE_INTEGER counter{};
   LARGE_INTEGER frequency{};
@@ -159,6 +178,7 @@ int main() {
     test_timestamped_buffer();
     test_delay_estimator();
     test_streaming_resampler_is_chunk_invariant();
+    test_streaming_resampler_equal_rate_is_bit_exact();
     test_telemetry_bus_roundtrip();
     test_equalizer_apo_capture_scope();
     std::cout << "All EchoNull core tests passed.\n";

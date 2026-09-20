@@ -152,6 +152,9 @@ std::pair<std::wstring, bool> runtime_status_values(
     if (noise_state == echonull::NoiseRuntimeState::active) {
       return {L"NOISE REMOVAL ACTIVE", true};
     }
+    if (noise_state == echonull::NoiseRuntimeState::overloaded) {
+      return {L"GPU BUSY · NOISE TEMPORARILY BYPASSED", false};
+    }
     return {noise_error == echonull::PluginErrorReason::model_missing
                 ? L"NOISE MODEL MISSING · BYPASS"
                 : L"NVIDIA RUNTIME / GPU ERROR · BYPASS",
@@ -159,6 +162,10 @@ std::pair<std::wstring, bool> runtime_status_values(
   }
   switch (runtime_state) {
     case echonull::PluginRuntimeState::waiting_for_reference:
+      if (noise_on &&
+          noise_state == echonull::NoiseRuntimeState::overloaded) {
+        return {L"WAITING FOR PLAYBACK · NOISE TEMPORARILY BYPASSED", true};
+      }
       if (noise_on && noise_state == echonull::NoiseRuntimeState::error) {
         return {noise_error == echonull::PluginErrorReason::model_missing
                     ? L"WAITING FOR PLAYBACK · NOISE MODEL MISSING"
@@ -168,6 +175,10 @@ std::pair<std::wstring, bool> runtime_status_values(
       return {noise_on ? L"WAITING FOR PLAYBACK · NOISE ON"
                        : L"WAITING FOR PLAYBACK", true};
     case echonull::PluginRuntimeState::aec_active:
+      if (noise_on &&
+          noise_state == echonull::NoiseRuntimeState::overloaded) {
+        return {L"RTX AEC ACTIVE · NOISE TEMPORARILY BYPASSED", true};
+      }
       if (noise_on && noise_state == echonull::NoiseRuntimeState::error) {
         return {noise_error == echonull::PluginErrorReason::model_missing
                     ? L"RTX AEC ACTIVE · NOISE MODEL MISSING"
@@ -184,6 +195,8 @@ std::pair<std::wstring, bool> runtime_status_values(
                          ? L"AEC MODEL MISSING · BYPASS"
                          : L"NVIDIA RUNTIME / GPU ERROR · BYPASS"),
               false};
+    case echonull::PluginRuntimeState::overloaded:
+      return {L"GPU BUSY · EFFECTS TEMPORARILY BYPASSED", false};
     case echonull::PluginRuntimeState::idle:
     default:
       return {L"IDLE", true};
@@ -382,7 +395,7 @@ intptr_t VST_FUNCTION_INTERFACE control(vst_effect_t* effect, const int32_t opco
       copy_text(pointer, VST_BUFFER_SIZE_PRODUCT_NAME, "EchoNull AEC");
       return 1;
     case VST_EFFECT_OPCODE_VENDOR_VERSION:
-      return 102;
+      return 103;
     case VST_EFFECT_OPCODE_VST_VERSION:
       return VST_VERSION_2_4_0_0;
     case VST_EFFECT_OPCODE_SUPPORTS:
@@ -472,7 +485,7 @@ extern "C" __declspec(dllexport) vst_effect_t* VSTPluginMain(
   self->effect.input_output_ratio = 1.0F;
   self->effect.effect_internal = self;
   self->effect.unique_id = static_cast<int32_t>(VST_FOURCC('E', 'N', 'A', 'C'));
-  self->effect.version = 102;
+  self->effect.version = 103;
   self->effect.process_float = &process;
   return &self->effect;
 }

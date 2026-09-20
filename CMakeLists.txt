@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(EchoNull VERSION 0.1.2 LANGUAGES CXX)
+project(EchoNull VERSION 0.1.3 LANGUAGES CXX)
 
 if(NOT WIN32)
   message(FATAL_ERROR "EchoNull currently supports Windows only.")
@@ -75,6 +75,7 @@ add_library(echonull_infrastructure
   src/infrastructure/text_encoding.cpp
   src/infrastructure/windows/device_manager.cpp
   src/infrastructure/windows/equalizer_apo.cpp
+  src/infrastructure/windows/realtime_audio_thread.cpp
   src/infrastructure/windows/telemetry_bus.cpp
   src/infrastructure/windows/wasapi_format.cpp
   src/infrastructure/windows/wasapi_loopback.cpp)

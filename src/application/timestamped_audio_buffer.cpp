@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace echonull {
 
@@ -20,7 +21,7 @@ std::int64_t TimestampedAudioBuffer::chunk_end_hns(const Chunk& chunk) const {
 }
 
 void TimestampedAudioBuffer::push(const std::int64_t start_hns,
-                                  const std::span<const float> samples) {
+                                  std::vector<float> samples) {
   if (samples.empty()) {
     return;
   }
@@ -29,7 +30,7 @@ void TimestampedAudioBuffer::push(const std::int64_t start_hns,
     if (!chunks_.empty() && start_hns < chunks_.back().start_hns) {
       chunks_.clear();
     }
-    chunks_.push_back(Chunk{start_hns, std::vector<float>(samples.begin(), samples.end())});
+    chunks_.push_back(Chunk{start_hns, std::move(samples)});
     const std::int64_t cutoff = chunk_end_hns(chunks_.back()) - capacity_hns_;
     while (!chunks_.empty() && chunk_end_hns(chunks_.front()) < cutoff) {
       chunks_.pop_front();

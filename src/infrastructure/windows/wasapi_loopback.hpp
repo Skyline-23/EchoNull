@@ -3,9 +3,9 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
-#include <span>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "infrastructure/windows/wasapi_common.hpp"
 
@@ -14,7 +14,7 @@ namespace echonull {
 class WasapiLoopbackCapture {
  public:
   using PacketHandler =
-      std::function<void(std::int64_t, std::span<const float>, bool)>;
+      std::function<void(std::int64_t, std::vector<float>, bool)>;
 
   explicit WasapiLoopbackCapture(std::wstring endpoint_id);
   ~WasapiLoopbackCapture();

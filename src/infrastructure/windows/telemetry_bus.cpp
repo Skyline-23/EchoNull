@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "infrastructure/windows/performance_clock.hpp"
+
 namespace echonull {
 namespace {
 
@@ -27,16 +29,6 @@ struct SharedTelemetry {
 
 SharedTelemetry* state(void* view) {
   return static_cast<SharedTelemetry*>(view);
-}
-
-std::int64_t qpc_hns() {
-  LARGE_INTEGER counter{};
-  LARGE_INTEGER frequency{};
-  QueryPerformanceCounter(&counter);
-  QueryPerformanceFrequency(&frequency);
-  return static_cast<std::int64_t>(
-      static_cast<long double>(counter.QuadPart) * 10'000'000.0L /
-      static_cast<long double>(frequency.QuadPart));
 }
 
 void close_mapping(HANDLE& mapping, void*& view) noexcept {
@@ -155,7 +147,7 @@ std::optional<TelemetrySnapshot> TelemetryBusReader::read_latest() {
     MemoryBarrier();
     const LONG after = shared->sequence;
     if (before == after && snapshot.timestamp_hns != 0 &&
-        qpc_hns() - snapshot.timestamp_hns <= 20'000'000) {
+        performance_timestamp_hns() - snapshot.timestamp_hns <= 20'000'000) {
       return snapshot;
     }
   }

@@ -1,6 +1,5 @@
 #include "infrastructure/windows/wasapi_loopback.hpp"
 
-#include <Avrt.h>
 #include <wrl/client.h>
 
 #include <cmath>
@@ -12,6 +11,8 @@
 #include "application/streaming_resampler.hpp"
 #include "domain/audio_types.hpp"
 #include "infrastructure/windows/device_manager.hpp"
+#include "infrastructure/windows/performance_clock.hpp"
+#include "infrastructure/windows/realtime_audio_thread.hpp"
 #include "infrastructure/windows/wasapi_format.hpp"
 
 namespace echonull {
@@ -29,20 +30,6 @@ class ScopedHandle {
 
  private:
   HANDLE value_ = nullptr;
-};
-
-class ScopedMmcss {
- public:
-  ScopedMmcss() {
-    DWORD task_index = 0;
-    handle_ = AvSetMmThreadCharacteristicsW(L"Audio", &task_index);
-  }
-  ~ScopedMmcss() {
-    if (handle_ != nullptr) AvRevertMmThreadCharacteristics(handle_);
-  }
-
- private:
-  HANDLE handle_ = nullptr;
 };
 
 }  // namespace
@@ -66,17 +53,11 @@ void WasapiLoopbackCapture::stop() noexcept {
 }
 
 std::int64_t WasapiLoopbackCapture::qpc_now_hns() {
-  LARGE_INTEGER counter{};
-  LARGE_INTEGER frequency{};
-  QueryPerformanceCounter(&counter);
-  QueryPerformanceFrequency(&frequency);
-  return static_cast<std::int64_t>(
-      static_cast<long double>(counter.QuadPart) *
-      kHundredNanosecondsPerSecond /
-      static_cast<long double>(frequency.QuadPart));
+  return performance_timestamp_hns();
 }
 
 void WasapiLoopbackCapture::run() noexcept {
+  ensure_realtime_audio_thread_priority();
   const HRESULT com_result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   const bool uninitialize_com = SUCCEEDED(com_result);
   try {
@@ -118,7 +99,7 @@ void WasapiLoopbackCapture::run() noexcept {
     throw_if_failed(audio_client->GetService(IID_PPV_ARGS(&capture_client)),
                     "IAudioClient::GetService(IAudioCaptureClient)");
     StreamingResampler resampler(format.sample_rate(), kSampleRate);
-    ScopedMmcss mmcss;
+    std::vector<float> mono;
     throw_if_failed(audio_client->Start(), "IAudioClient::Start(loopback)");
     state_.set_ready();
 
@@ -149,7 +130,7 @@ void WasapiLoopbackCapture::run() noexcept {
             (buffer_flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0;
         const bool timestamp_error =
             (buffer_flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0;
-        std::vector<float> mono(frame_count, 0.0F);
+        mono.assign(frame_count, 0.0F);
         if (!silent) format.decode_mono(data, frame_count, mono);
         if (discontinuity) resampler.reset();
 
@@ -166,7 +147,8 @@ void WasapiLoopbackCapture::run() noexcept {
                 static_cast<double>(kHundredNanosecondsPerSecond) /
                 static_cast<double>(format.sample_rate())));
         if (handler_ && !converted.samples.empty()) {
-          handler_(converted_timestamp, converted.samples, discontinuity);
+          handler_(converted_timestamp, std::move(converted.samples),
+                   discontinuity);
         }
         throw_if_failed(capture_client->ReleaseBuffer(frame_count),
                         "IAudioCaptureClient::ReleaseBuffer");

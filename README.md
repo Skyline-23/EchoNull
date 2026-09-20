@@ -124,6 +124,14 @@ Noise Removal defaults to off. It becomes available when the release was built
 with NVIDIA's 48 kHz Denoiser feature; otherwise enabling it produces the
 explicit `NOISE MODEL MISSING` status while AEC continues to work.
 
+EchoNull registers only its real-time callback and loopback threads with
+Windows MMCSS `Pro Audio`; it does not change the priority of `audiodg.exe` as a
+whole. If sustained GPU contention makes an NvAFX frame consume most of its
+audio deadline, EchoNull temporarily sheds Noise Removal first and, when
+necessary, AEC. The microphone is passed through during that bounded backoff so
+voice continuity takes priority over an effect, and the panel reports the
+temporary bypass.
+
 ## Build
 
 ```powershell

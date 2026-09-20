@@ -1,6 +1,7 @@
 #include "infrastructure/nvidia/nvafx_aec.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -36,7 +37,8 @@ namespace echonull {
 
 struct NvafxAec::Impl {
   std::vector<std::filesystem::path> model_paths;
-  float intensity = 1.0F;
+  std::atomic<float> requested_intensity{1.0F};
+  float applied_intensity = 1.0F;
   std::uint32_t sample_rate = kSampleRate;
   mutable std::mutex mutex;
   AecStatus status;
@@ -50,7 +52,8 @@ NvafxAec::NvafxAec(std::vector<std::filesystem::path> model_paths,
                    const std::uint32_t sample_rate)
     : impl_(std::make_unique<Impl>()) {
   impl_->model_paths = std::move(model_paths);
-  impl_->intensity = intensity;
+  impl_->requested_intensity.store(std::clamp(intensity, 0.0F, 1.0F),
+                                   std::memory_order_relaxed);
   impl_->sample_rate = sample_rate;
 }
 
@@ -90,7 +93,9 @@ void NvafxAec::initialize() {
           "NvAFX_SetU32(input_sample_rate)");
     check(api.set_u32(impl_->handle, NVAFX_PARAM_OUTPUT_SAMPLE_RATE, impl_->sample_rate),
           "NvAFX_SetU32(output_sample_rate)");
-    check(api.set_float(impl_->handle, NVAFX_PARAM_INTENSITY_RATIO, impl_->intensity),
+    const float intensity =
+        impl_->requested_intensity.load(std::memory_order_relaxed);
+    check(api.set_float(impl_->handle, NVAFX_PARAM_INTENSITY_RATIO, intensity),
           "NvAFX_SetFloat(intensity_ratio)");
     check(api.load_effect(impl_->handle), "NvAFX_Load(aec)");
 
@@ -118,6 +123,7 @@ void NvafxAec::initialize() {
     }
     current.ready = true;
     std::scoped_lock lock(impl_->mutex);
+    impl_->applied_intensity = intensity;
     impl_->status = current;
     return;
   } catch (const std::exception& error) {
@@ -148,15 +154,7 @@ void NvafxAec::reset() {
 
 void NvafxAec::set_intensity(const float intensity) {
   const float value = std::clamp(intensity, 0.0F, 1.0F);
-  std::scoped_lock lock(impl_->mutex);
-  impl_->intensity = value;
-#if ECHONULL_HAS_NVAFX
-  if (impl_->handle != nullptr &&
-      NvafxApi::instance().set_float(impl_->handle, NVAFX_PARAM_INTENSITY_RATIO, value) !=
-          NVAFX_STATUS_SUCCESS) {
-    throw std::runtime_error("NvAFX_SetFloat(aec intensity) failed");
-  }
-#endif
+  impl_->requested_intensity.store(value, std::memory_order_relaxed);
 }
 
 void NvafxAec::process(const std::span<const float> near_end,
@@ -177,6 +175,16 @@ void NvafxAec::process(const std::span<const float> near_end,
       far_end.size() != current.input_frame_samples ||
       output.size() != current.output_frame_samples) {
     throw std::runtime_error("NvAFX AEC frame size mismatch");
+  }
+  const float requested_intensity =
+      impl_->requested_intensity.load(std::memory_order_relaxed);
+  if (requested_intensity != impl_->applied_intensity) {
+    if (NvafxApi::instance().set_float(
+            impl_->handle, NVAFX_PARAM_INTENSITY_RATIO,
+            requested_intensity) != NVAFX_STATUS_SUCCESS) {
+      throw std::runtime_error("NvAFX_SetFloat(aec intensity) failed");
+    }
+    impl_->applied_intensity = requested_intensity;
   }
   const float* input_buffers[2] = {near_end.data(), far_end.data()};
   float* output_buffers[1] = {output.data()};

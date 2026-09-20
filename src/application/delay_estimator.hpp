@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <span>
+#include <vector>
 
 namespace echonull {
 
@@ -17,7 +18,9 @@ class DelayEstimator {
   [[nodiscard]] bool has_estimate() const { return has_estimate_; }
 
  private:
-  void estimate();
+  void begin_estimate();
+  void advance_estimate();
+  void finish_estimate();
 
   std::uint32_t samples_per_bin_;
   std::size_t max_lag_bins_;
@@ -30,6 +33,16 @@ class DelayEstimator {
   double smoothed_delay_ms_;
   double confidence_ = 0.0;
   bool has_estimate_ = false;
+  bool estimation_in_progress_ = false;
+  std::size_t next_lag_ = 0;
+  std::size_t best_lag_ = 0;
+  double best_score_ = -1.0;
+  double estimate_near_mean_ = 0.0;
+  double estimate_near_power_ = 0.0;
+  std::vector<double> estimate_near_;
+  std::vector<double> estimate_far_;
+  std::vector<double> far_prefix_sum_;
+  std::vector<double> far_prefix_power_;
 };
 
 }  // namespace echonull
