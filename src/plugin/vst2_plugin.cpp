@@ -410,7 +410,7 @@ intptr_t VST_FUNCTION_INTERFACE control(vst_effect_t* effect, const int32_t opco
       copy_text(pointer, VST_BUFFER_SIZE_PRODUCT_NAME, "EchoNull AEC");
       return 1;
     case VST_EFFECT_OPCODE_VENDOR_VERSION:
-      return 103;
+      return 105;
     case VST_EFFECT_OPCODE_VST_VERSION:
       return VST_VERSION_2_4_0_0;
     case VST_EFFECT_OPCODE_SUPPORTS:
@@ -500,7 +500,7 @@ extern "C" __declspec(dllexport) vst_effect_t* VSTPluginMain(
   self->effect.input_output_ratio = 1.0F;
   self->effect.effect_internal = self;
   self->effect.unique_id = static_cast<int32_t>(VST_FOURCC('E', 'N', 'A', 'C'));
-  self->effect.version = 103;
+  self->effect.version = 105;
   self->effect.process_float = &process;
   return &self->effect;
 }

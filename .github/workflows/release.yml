@@ -9,7 +9,7 @@ on:
       tag_name:
         description: Release tag to create or update
         required: true
-        default: v0.1.4
+        default: v0.1.5
 
 permissions:
   contents: write
