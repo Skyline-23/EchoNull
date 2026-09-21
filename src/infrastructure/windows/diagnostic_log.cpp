@@ -190,6 +190,13 @@ void AsyncDiagnosticLog::open() {
         }
       }
       if (has_snapshot) {
+        if (last_statistics_hns == 0) {
+          write_line(output, "GPU_SETUP priority_class=" +
+              std::to_string(snapshot.gpu_priority_class) +
+              " priority_status=" + std::to_string(snapshot.gpu_priority_status) +
+              " shared_cuda_context=" + std::to_string(snapshot.shared_cuda_context) +
+              " output_lead_ms=80 cpu_fallback=0 effect_shedding=0" + identity);
+        }
         if ((snapshot.aec_error != 0 || snapshot.noise_error != 0) &&
             (snapshot.aec_error != previous.aec_error ||
              snapshot.noise_error != previous.noise_error ||
@@ -203,25 +210,23 @@ void AsyncDiagnosticLog::open() {
                          " noise_error=" + error_name(snapshot.noise_error) +
                          identity);
         }
-        const bool counters_changed =
-            snapshot.fallback_frames != previous.fallback_frames ||
-            snapshot.gpu_deadline_misses != previous.gpu_deadline_misses ||
-            snapshot.queue_overruns != previous.queue_overruns ||
-            snapshot.output_underrun_samples !=
-                previous.output_underrun_samples;
-        if (counters_changed &&
-            (last_statistics_hns == 0 ||
+        // Also write healthy progress, so zero errors cannot be mistaken for
+        // a stalled stream or a worker which never ran either effect.
+        if (last_statistics_hns == 0 ||
              snapshot.timestamp_hns - last_statistics_hns >=
-                 kStatisticsIntervalHns)) {
+                 kStatisticsIntervalHns) {
           write_line(output,
-                     "REALTIME dry_fallback_frames=" +
-                         std::to_string(snapshot.fallback_frames) +
+                     "REALTIME protected_miss_frames=" +
+                         std::to_string(snapshot.protected_miss_frames) +
                          " gpu_deadline_misses=" +
                          std::to_string(snapshot.gpu_deadline_misses) +
                          " queue_overruns=" +
                          std::to_string(snapshot.queue_overruns) +
                          " output_underrun_samples=" +
                          std::to_string(snapshot.output_underrun_samples) +
+                         " aec_processed_frames=" + std::to_string(snapshot.aec_processed_frames) +
+                         " noise_processed_frames=" + std::to_string(snapshot.noise_processed_frames) +
+                         " gpu_run_max_us=" + std::to_string(snapshot.gpu_run_max_us) +
                          identity);
           last_statistics_hns = snapshot.timestamp_hns;
         }

@@ -15,14 +15,16 @@
 #include <vector>
 
 #include "application/delay_estimator.hpp"
-#include "application/output_transition.hpp"
+#include "application/protected_output.hpp"
 #include "application/streaming_resampler.hpp"
 #include "application/timestamped_audio_buffer.hpp"
 #include "domain/audio_types.hpp"
 #include "infrastructure/nvidia/nvafx_aec.hpp"
+#include "infrastructure/nvidia/cuda_audio_context.hpp"
 #include "infrastructure/nvidia/nvafx_denoiser.hpp"
 #include "infrastructure/nvidia/packaged_runtime.hpp"
 #include "infrastructure/windows/diagnostic_log.hpp"
+#include "infrastructure/windows/gpu_priority.hpp"
 #include "infrastructure/windows/performance_clock.hpp"
 #include "infrastructure/windows/realtime_audio_thread.hpp"
 #include "infrastructure/windows/telemetry_bus.hpp"
@@ -80,9 +82,9 @@ class FloatFifo {
 };
 
 constexpr std::size_t kAsyncQueueCapacity = 16;
-constexpr std::size_t kWorkerLatencyFrames = 4;
-constexpr std::size_t kOutputLeadFrames = 6;
-constexpr std::uint64_t kOverloadBypassFrames = 200;  // 2 seconds at 10 ms/frame.
+// 80 ms total lead, including frame assembly and resampler lookahead. The
+// extra 20 ms keeps ~50 ms GPU scheduling spikes inside the playout budget.
+constexpr std::size_t kOutputLeadFrames = 8;
 
 struct WorkFrame {
   std::uint64_t sequence = 0;
@@ -94,7 +96,7 @@ struct WorkFrame {
 
 struct ResultFrame {
   std::uint64_t sequence = 0;
-  bool effect_applied = false;
+  bool complete = false;
   std::vector<float> samples;
 };
 
@@ -138,7 +140,7 @@ class SpscFrameQueue {
 
   [[nodiscard]] bool try_push_result(const std::uint64_t sequence,
                                      const std::span<const float> samples,
-                                     const bool effect_applied) noexcept
+                                     const bool complete) noexcept
     requires std::is_same_v<Frame, ResultFrame>
   {
     const auto write = write_.load(std::memory_order_relaxed);
@@ -146,7 +148,7 @@ class SpscFrameQueue {
     if (next == read_.load(std::memory_order_acquire)) return false;
     auto& slot = slots_[write];
     slot.sequence = sequence;
-    slot.effect_applied = effect_applied;
+    slot.complete = complete;
     std::copy(samples.begin(), samples.end(), slot.samples.begin());
     write_.store(next, std::memory_order_release);
     return true;
@@ -174,29 +176,31 @@ class SpscFrameQueue {
   std::atomic<std::size_t> write_{0};
 };
 
-class DelayedDryFrames {
+class PendingFrames {
  public:
   struct Frame {
     std::uint64_t sequence = 0;
-    bool expects_result = false;
+    bool requires_processing = false;
     std::vector<float> samples;
   };
 
   void configure(const std::size_t frame_samples) {
     frames_.clear();
-    frames_.resize(kWorkerLatencyFrames + 2);
+    frames_.resize(kAsyncQueueCapacity + 1);
     for (auto& frame : frames_) frame.samples.resize(frame_samples);
     clear();
   }
 
-  void push(const std::uint64_t sequence,
+  bool push(const std::uint64_t sequence,
             const std::span<const float> samples,
-            const bool expects_result) noexcept {
+            const bool requires_processing) noexcept {
+    if (size_ == frames_.size()) return false;
     auto& frame = frames_[(head_ + size_) % frames_.size()];
     frame.sequence = sequence;
-    frame.expects_result = expects_result;
+    frame.requires_processing = requires_processing;
     std::copy(samples.begin(), samples.end(), frame.samples.begin());
     ++size_;
+    return true;
   }
 
   [[nodiscard]] Frame& front() noexcept { return frames_[head_]; }
@@ -288,19 +292,26 @@ struct PluginProcessor::Impl {
   std::unique_ptr<NvafxDenoiser> denoiser;
   SpscFrameQueue<WorkFrame> work_queue;
   SpscFrameQueue<ResultFrame> result_queue;
-  DelayedDryFrames delayed_dry;
-  OutputTransition output_transition;
+  PendingFrames pending_frames;
+  ProtectedOutput protected_output;
   std::thread gpu_worker;
   HANDLE gpu_wake_event = nullptr;
   HANDLE gpu_initialized_event = nullptr;
   std::atomic<bool> gpu_worker_stop{false};
   std::atomic<std::uint64_t> minimum_useful_sequence{1};
-  std::atomic<std::uint64_t> fallback_frames{0};
+  std::atomic<std::uint64_t> protected_miss_frames{0};
   std::atomic<std::uint64_t> gpu_deadline_misses{0};
   std::atomic<std::uint64_t> queue_overruns{0};
   std::atomic<std::uint64_t> output_underrun_samples{0};
-  std::atomic<std::uint64_t> aec_shed_until_sequence{0};
-  std::atomic<std::uint64_t> noise_shed_until_sequence{0};
+  std::atomic<std::uint64_t> aec_processed_frames{0};
+  std::atomic<std::uint64_t> noise_processed_frames{0};
+  std::atomic<std::uint64_t> gpu_run_max_us{0};
+  std::uint32_t gpu_priority_class = 0;
+  std::uint32_t gpu_priority_status = 0;
+  std::uint32_t shared_cuda_context = 0;
+#ifdef ECHONULL_PROCESSOR_TESTING
+  std::atomic<std::uint32_t> test_delay_ms{0};
+#endif
   std::atomic<bool> aec_ready{false};
   std::atomic<bool> noise_ready{false};
   std::mutex reference_mutex;
@@ -328,7 +339,6 @@ struct PluginProcessor::Impl {
   std::uint64_t telemetry_frames_since_publish = 0;
   std::uint64_t next_sequence = 1;
   std::uint64_t overload_hold_samples = 0;
-  std::uint64_t dry_bypass_until_sequence = 0;
   float last_output_sample = 0.0F;
   bool pipeline_active = false;
 };
@@ -456,9 +466,26 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
     impl_->gpu_worker_stop.store(false, std::memory_order_relaxed);
     impl_->gpu_worker = std::thread([this] {
       ensure_realtime_audio_thread_priority();
+#ifdef ECHONULL_PROCESSOR_TESTING
+      GpuPriority priority(true);
+#else
+      GpuPriority priority(is_windows_audio_engine_process());
+#endif
+      impl_->gpu_priority_class = priority.observed_class();
+      impl_->gpu_priority_status = priority.status();
+      std::unique_ptr<CudaAudioContext> context;
+#if ECHONULL_HAS_NVAFX
+      try {
+        context = std::make_unique<CudaAudioContext>();
+      } catch (...) {
+        // Older drivers can still run both effects in SDK-managed GPU contexts.
+        // This is not a CPU or unprocessed-audio fallback.
+      }
+#endif
+      impl_->shared_cuda_context = context ? 1U : 0U;
       impl_->aec_frame_samples = 480;
       try {
-        impl_->aec->initialize();
+        impl_->aec->initialize(context != nullptr);
         const auto status = impl_->aec->status();
         impl_->aec_frame_samples = status.input_frame_samples == 0
                                        ? 480
@@ -481,7 +508,7 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
       }
 
       try {
-        impl_->denoiser->initialize();
+        impl_->denoiser->initialize(context != nullptr);
         const auto status = impl_->denoiser->status();
         const bool ready = status.ready &&
                            status.input_frame_samples ==
@@ -504,6 +531,29 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
 
       impl_->worker_processed_scratch.resize(impl_->aec_frame_samples);
       impl_->worker_denoised_scratch.resize(impl_->aec_frame_samples);
+      // NvAFX/TensorRT can lazily initialize kernels and CUDA graphs on Run,
+      // not Load. Pay that one-time cost before accepting microphone frames.
+      const std::vector<float> warmup_silence(impl_->aec_frame_samples, 0.0F);
+      for (int frame = 0; frame < 16; ++frame) {
+        auto& processed = impl_->worker_processed_scratch;
+        std::fill(processed.begin(), processed.end(), 0.0F);
+        if (impl_->aec_ready.load(std::memory_order_acquire)) {
+          try {
+            impl_->aec->process(warmup_silence, warmup_silence, processed);
+          } catch (...) {
+            impl_->aec_ready.store(false, std::memory_order_release);
+            aec_error_reason_.store(PluginErrorReason::runtime_or_gpu);
+          }
+        }
+        if (impl_->noise_ready.load(std::memory_order_acquire)) {
+          try {
+            impl_->denoiser->process(processed, impl_->worker_denoised_scratch);
+          } catch (...) {
+            impl_->noise_ready.store(false, std::memory_order_release);
+            noise_error_reason_.store(PluginErrorReason::runtime_or_gpu);
+          }
+        }
+      }
       SetEvent(impl_->gpu_initialized_event);
 
       float applied_aec_strength =
@@ -522,14 +572,17 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
             impl_->work_queue.pop();
             continue;
           }
+#ifdef ECHONULL_PROCESSOR_TESTING
+          if (const auto delay = impl_->test_delay_ms.exchange(0); delay != 0) Sleep(delay);
+#endif
 
           auto& processed = impl_->worker_processed_scratch;
           auto& denoised = impl_->worker_denoised_scratch;
           std::copy(job->near_end.begin(), job->near_end.end(),
                     processed.begin());
           const auto started_hns = performance_timestamp_hns();
-          std::int64_t aec_elapsed_hns = 0;
-          bool effect_applied = false;
+          bool aec_complete = !job->run_aec;
+          bool noise_complete = !job->run_noise;
 
           const float desired_aec =
               aec_strength_.load(std::memory_order_relaxed);
@@ -545,15 +598,11 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
             }
           }
           if (job->run_aec &&
-              sequence >= impl_->aec_shed_until_sequence.load(
-                              std::memory_order_relaxed) &&
               impl_->aec_ready.load(std::memory_order_acquire)) {
             try {
-              const auto aec_started_hns = performance_timestamp_hns();
               impl_->aec->process(job->near_end, job->far_end, processed);
-              effect_applied = true;
-              aec_elapsed_hns =
-                  performance_timestamp_hns() - aec_started_hns;
+              aec_complete = true;
+              impl_->aec_processed_frames.fetch_add(1, std::memory_order_relaxed);
             } catch (...) {
               std::copy(job->near_end.begin(), job->near_end.end(),
                         processed.begin());
@@ -577,13 +626,12 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
             }
           }
           if (job->run_noise &&
-              sequence >= impl_->noise_shed_until_sequence.load(
-                              std::memory_order_relaxed) &&
               impl_->noise_ready.load(std::memory_order_acquire)) {
             try {
               impl_->denoiser->process(processed, denoised);
               processed.swap(denoised);
-              effect_applied = true;
+              noise_complete = true;
+              impl_->noise_processed_frames.fetch_add(1, std::memory_order_relaxed);
             } catch (...) {
               impl_->noise_ready.store(false, std::memory_order_release);
               noise_error_reason_.store(PluginErrorReason::runtime_or_gpu,
@@ -593,14 +641,11 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
 
           const auto total_elapsed_hns =
               performance_timestamp_hns() - started_hns;
-          if (total_elapsed_hns * 5 > frame_deadline_hns * 4) {
-            impl_->noise_shed_until_sequence.store(sequence + 50,
-                                                   std::memory_order_relaxed);
-          }
-          if (aec_elapsed_hns > frame_deadline_hns) {
-            impl_->aec_shed_until_sequence.store(sequence + 25,
-                                                 std::memory_order_relaxed);
-          }
+          const auto elapsed_us = static_cast<std::uint64_t>(
+              std::max<std::int64_t>(0, total_elapsed_hns / 10));
+          impl_->gpu_run_max_us.store(
+              std::max(impl_->gpu_run_max_us.load(std::memory_order_relaxed),
+                       elapsed_us), std::memory_order_relaxed);
           if (total_elapsed_hns > frame_deadline_hns) {
             impl_->gpu_deadline_misses.fetch_add(1,
                                                  std::memory_order_relaxed);
@@ -608,12 +653,21 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
           if (sequence >= impl_->minimum_useful_sequence.load(
                               std::memory_order_acquire) &&
               !impl_->result_queue.try_push_result(sequence, processed,
-                                                   effect_applied)) {
+                                                   aec_complete && noise_complete)) {
             impl_->queue_overruns.fetch_add(1, std::memory_order_relaxed);
           }
           impl_->work_queue.pop();
         }
       }
+      // USER_CUDA_CONTEXT requires destruction on this thread, before the
+      // context itself is destroyed; never destroy these handles on the UI.
+      try {
+        if (context) context->make_current();
+      } catch (...) {
+        // Do not let a device-removal error terminate the audio-engine process.
+      }
+      try { impl_->aec->reset(); } catch (...) {}
+      impl_->denoiser->reset();
     });
     if (WaitForSingleObject(impl_->gpu_initialized_event, INFINITE) !=
         WAIT_OBJECT_0) {
@@ -626,7 +680,7 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
         impl_->aec_frame_samples == 0 ? 480 : impl_->aec_frame_samples;
     impl_->work_queue.configure(scratch_frame_samples);
     impl_->result_queue.configure(scratch_frame_samples);
-    impl_->delayed_dry.configure(scratch_frame_samples);
+    impl_->pending_frames.configure(scratch_frame_samples);
     impl_->mono_scratch.reserve(std::max<std::size_t>(
         scratch_frame_samples, static_cast<std::size_t>(4096)));
     impl_->converted_scratch.reserve(4096);
@@ -720,18 +774,21 @@ void PluginProcessor::stop() noexcept {
   impl_->telemetry_frames_since_publish = 0;
   impl_->next_sequence = 1;
   impl_->overload_hold_samples = 0;
-  impl_->dry_bypass_until_sequence = 0;
-  impl_->output_transition.reset();
+  impl_->protected_output.reset();
   impl_->last_output_sample = 0.0F;
   impl_->pipeline_active = false;
-  impl_->delayed_dry.clear();
+  impl_->pending_frames.clear();
   impl_->minimum_useful_sequence.store(1, std::memory_order_relaxed);
-  impl_->fallback_frames.store(0, std::memory_order_relaxed);
+  impl_->protected_miss_frames.store(0, std::memory_order_relaxed);
   impl_->gpu_deadline_misses.store(0, std::memory_order_relaxed);
   impl_->queue_overruns.store(0, std::memory_order_relaxed);
   impl_->output_underrun_samples.store(0, std::memory_order_relaxed);
-  impl_->aec_shed_until_sequence.store(0, std::memory_order_relaxed);
-  impl_->noise_shed_until_sequence.store(0, std::memory_order_relaxed);
+  impl_->aec_processed_frames.store(0, std::memory_order_relaxed);
+  impl_->noise_processed_frames.store(0, std::memory_order_relaxed);
+  impl_->gpu_run_max_us.store(0, std::memory_order_relaxed);
+  impl_->gpu_priority_class = 0;
+  impl_->gpu_priority_status = 0;
+  impl_->shared_cuda_context = 0;
   impl_->aec_ready.store(false, std::memory_order_relaxed);
   impl_->noise_ready.store(false, std::memory_order_relaxed);
   output_level_.store(0.0F, std::memory_order_relaxed);
@@ -771,10 +828,15 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
               aec_error_reason_.load(std::memory_order_relaxed)),
           static_cast<std::uint32_t>(
               noise_error_reason_.load(std::memory_order_relaxed)),
-          impl_->fallback_frames.load(std::memory_order_relaxed),
+          impl_->protected_miss_frames.load(std::memory_order_relaxed),
           impl_->gpu_deadline_misses.load(std::memory_order_relaxed),
           impl_->queue_overruns.load(std::memory_order_relaxed),
-          impl_->output_underrun_samples.load(std::memory_order_relaxed)};
+          impl_->output_underrun_samples.load(std::memory_order_relaxed),
+          impl_->aec_processed_frames.load(std::memory_order_relaxed),
+          impl_->noise_processed_frames.load(std::memory_order_relaxed),
+          impl_->gpu_run_max_us.load(std::memory_order_relaxed),
+          impl_->gpu_priority_class, impl_->gpu_priority_status,
+          impl_->shared_cuda_context};
       if (impl_->telemetry_writer) impl_->telemetry_writer->publish(snapshot);
       if (impl_->diagnostic_log) impl_->diagnostic_log->publish(snapshot);
     }
@@ -791,7 +853,7 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
       impl_->pipeline_active = false;
       impl_->minimum_useful_sequence.store(impl_->next_sequence,
                                            std::memory_order_release);
-      impl_->delayed_dry.clear();
+      impl_->pending_frames.clear();
       impl_->near_queue.clear();
       impl_->output_queue.clear();
       impl_->input_resampler->reset();
@@ -799,9 +861,9 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
       impl_->input_origin_hns = 0;
       impl_->near_queue_start_hns = 0;
       impl_->last_output_sample = 0.0F;
-      impl_->dry_bypass_until_sequence = 0;
-      impl_->output_transition.reset();
+      impl_->protected_output.reset();
     }
+    while (impl_->result_queue.try_front()) impl_->result_queue.pop();
     copy_input(inputs, outputs, sample_count, channel_count);
     runtime_state_.store(PluginRuntimeState::bypassed,
                          std::memory_order_relaxed);
@@ -816,15 +878,15 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
       if (impl_->output_resampler) impl_->output_resampler->reset();
       impl_->near_queue.clear();
       impl_->output_queue.clear();
-      impl_->delayed_dry.clear();
+      impl_->pending_frames.clear();
       impl_->output_queue.append(impl_->startup_silence);
       impl_->input_origin_hns = 0;
       impl_->near_queue_start_hns = 0;
       impl_->last_output_sample = 0.0F;
-      impl_->dry_bypass_until_sequence = 0;
-      impl_->output_transition.reset();
+      impl_->protected_output.reset();
       impl_->minimum_useful_sequence.store(impl_->next_sequence,
                                            std::memory_order_release);
+      while (impl_->result_queue.try_front()) impl_->result_queue.pop();
     }
     if (impl_->input_origin_hns == 0) {
       impl_->input_origin_hns = performance_timestamp_hns();
@@ -870,6 +932,39 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
     auto& near_end = impl_->near_end_scratch;
     auto& unshifted_far = impl_->unshifted_far_scratch;
     auto& far_end = impl_->far_end_scratch;
+    const auto render_pending_frame = [&] {
+      auto& pending = impl_->pending_frames.front();
+      while (auto* stale = impl_->result_queue.try_front()) {
+        if (stale->sequence >= pending.sequence) break;
+        impl_->result_queue.pop();
+      }
+      const auto* result = impl_->result_queue.try_front();
+      const bool matching = result && result->sequence == pending.sequence;
+      const bool complete = matching && result->complete;
+      const bool missed = pending.requires_processing && !complete;
+      if (missed) {
+        impl_->protected_miss_frames.fetch_add(1, std::memory_order_relaxed);
+        impl_->overload_hold_samples = kSampleRate / 2;
+        runtime_state_.store(PluginRuntimeState::overloaded, std::memory_order_relaxed);
+        if (noise_enabled_.load(std::memory_order_relaxed)) {
+          noise_runtime_state_.store(NoiseRuntimeState::overloaded,
+                                     std::memory_order_relaxed);
+        }
+      }
+      const std::span<const float> processed = matching
+          ? std::span<const float>(result->samples) : std::span<const float>{};
+      impl_->protected_output.render(pending.samples, processed,
+                                      pending.requires_processing, complete,
+                                      impl_->transition_scratch);
+      impl_->output_resampler->push_into(impl_->transition_scratch,
+                                         impl_->host_audio_scratch);
+      impl_->output_queue.append(impl_->host_audio_scratch);
+      // A queue slot remains owned until resampling has finished reading it.
+      if (matching) impl_->result_queue.pop();
+      impl_->minimum_useful_sequence.store(pending.sequence + 1,
+                                           std::memory_order_release);
+      impl_->pending_frames.pop();
+    };
     while (impl_->near_queue.size() >= frame_samples) {
       impl_->near_queue.read_exact(near_end);
       impl_->overload_hold_samples =
@@ -902,17 +997,8 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
           impl_->noise_ready.load(std::memory_order_acquire);
       const bool run_aec = aec_enabled && aec_ready && !reference_failed &&
                            far_coverage >= 0.98;
-      const bool run_noise = noise_enabled && noise_ready;
-      const bool aec_load_shed =
-          impl_->next_sequence < impl_->aec_shed_until_sequence.load(
-                                     std::memory_order_relaxed);
-      const bool noise_load_shed =
-          impl_->next_sequence < impl_->noise_shed_until_sequence.load(
-                                     std::memory_order_relaxed);
-      const bool dry_bypass =
-          impl_->next_sequence < impl_->dry_bypass_until_sequence;
 
-      if (impl_->overload_hold_samples != 0 || aec_load_shed || dry_bypass) {
+      if (impl_->overload_hold_samples != 0) {
         runtime_state_.store(PluginRuntimeState::overloaded,
                              std::memory_order_relaxed);
       } else if (!aec_enabled) {
@@ -931,72 +1017,29 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
       noise_runtime_state_.store(
           !noise_enabled
               ? NoiseRuntimeState::disabled
-              : (impl_->overload_hold_samples != 0 || noise_load_shed ||
-                         dry_bypass
+              : (impl_->overload_hold_samples != 0
                      ? NoiseRuntimeState::overloaded
                      : (noise_ready ? NoiseRuntimeState::active
                                     : NoiseRuntimeState::error)),
           std::memory_order_relaxed);
 
       const auto sequence = impl_->next_sequence++;
-      const bool process_aec = run_aec && !aec_load_shed && !dry_bypass;
-      const bool process_noise = run_noise && !noise_load_shed && !dry_bypass;
-      bool enqueued = false;
-      if (process_aec || process_noise) {
-        enqueued = impl_->work_queue.try_push_work(
-            sequence, near_end, far_end, process_aec, process_noise);
+      const bool process_aec = aec_enabled && !reference_failed && far_coverage >= 0.98;
+      const bool requires_processing = process_aec || noise_enabled;
+      if (requires_processing) {
+        const bool enqueued = impl_->work_queue.try_push_work(
+            sequence, near_end, far_end, process_aec, noise_enabled);
         if (!enqueued) {
           impl_->queue_overruns.fetch_add(1, std::memory_order_relaxed);
-          impl_->dry_bypass_until_sequence =
-              sequence + kOverloadBypassFrames;
         } else {
           SetEvent(impl_->gpu_wake_event);
         }
       }
-      impl_->delayed_dry.push(sequence, near_end, enqueued);
-
-      if (impl_->delayed_dry.size() > kWorkerLatencyFrames) {
-        auto& dry = impl_->delayed_dry.front();
-        while (auto* stale = impl_->result_queue.try_front()) {
-          if (stale->sequence >= dry.sequence) break;
-          impl_->result_queue.pop();
-        }
-        std::span<const float> selected = dry.samples;
-        bool wet = false;
-        bool consume_result = false;
-        if (auto* result = impl_->result_queue.try_front();
-            result != nullptr && result->sequence == dry.sequence) {
-          if (dry.expects_result &&
-              dry.sequence >= impl_->dry_bypass_until_sequence) {
-            selected = result->samples;
-            wet = result->effect_applied;
-          }
-          consume_result = true;
-        } else if (dry.expects_result &&
-                   dry.sequence >= impl_->dry_bypass_until_sequence) {
-          impl_->fallback_frames.fetch_add(1, std::memory_order_relaxed);
-          impl_->overload_hold_samples = kSampleRate / 2;
-          impl_->dry_bypass_until_sequence =
-              sequence + kOverloadBypassFrames;
-          runtime_state_.store(PluginRuntimeState::overloaded,
-                               std::memory_order_relaxed);
-          if (noise_enabled) {
-            noise_runtime_state_.store(NoiseRuntimeState::overloaded,
-                                       std::memory_order_relaxed);
-          }
-        }
-        impl_->output_transition.render(
-            dry.samples, selected, wet, impl_->transition_scratch);
-        if (impl_->output_resampler) {
-          impl_->output_resampler->push_into(impl_->transition_scratch,
-                                             impl_->host_audio_scratch);
-          impl_->output_queue.append(impl_->host_audio_scratch);
-        }
-        // Keep the result slot owned by the audio thread until all reads finish.
-        if (consume_result) impl_->result_queue.pop();
-        impl_->minimum_useful_sequence.store(dry.sequence + 1,
-                                             std::memory_order_release);
-        impl_->delayed_dry.pop();
+      if (!impl_->pending_frames.push(sequence, near_end, requires_processing)) {
+        // A host can submit a block larger than the normal real-time budget.
+        // Keep the ring bounded without overwriting a still-owned frame.
+        render_pending_frame();
+        (void)impl_->pending_frames.push(sequence, near_end, requires_processing);
       }
       impl_->near_queue_start_hns +=
           samples_to_hns(static_cast<double>(frame_samples), kSampleRate);
@@ -1005,6 +1048,13 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
             impl_->near_queue_start_hns -
             milliseconds_to_hns(impl_->max_delay_ms + 500.0));
       }
+    }
+
+    // Resolve results only when the host needs output. Never reject at an
+    // earlier fixed deadline while buffered audio still covers the callback.
+    while (impl_->output_queue.size() < static_cast<std::size_t>(sample_count) &&
+           impl_->pending_frames.size() != 0) {
+      render_pending_frame();
     }
 
     const std::size_t available_output = std::min(
@@ -1032,12 +1082,37 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
     }
     update_meter();
   } catch (...) {
-    copy_input(inputs, outputs, sample_count, channel_count);
+    for (std::uint32_t channel = 0; channel < channel_count; ++channel) {
+      if (outputs[channel]) std::fill_n(outputs[channel], sample_count, 0.0F);
+    }
     runtime_state_.store(PluginRuntimeState::error, std::memory_order_relaxed);
     aec_error_reason_.store(PluginErrorReason::runtime_or_gpu,
                             std::memory_order_relaxed);
     update_meter();
   }
 }
+
+#ifdef ECHONULL_PROCESSOR_TESTING
+void PluginProcessor::test_feed_reference(std::int64_t timestamp,
+                                         std::vector<float> samples) {
+  std::scoped_lock lock(impl_->reference_mutex);
+  impl_->pending_reference.push_back({timestamp, std::move(samples)});
+}
+void PluginProcessor::test_delay_next_job(std::uint32_t milliseconds) {
+  impl_->test_delay_ms.store(milliseconds);
+}
+TelemetrySnapshot PluginProcessor::test_diagnostics() const {
+  return {performance_timestamp_hns(), output_level(),
+          static_cast<std::uint32_t>(runtime_state()),
+          static_cast<std::uint32_t>(noise_runtime_state()),
+          static_cast<std::uint32_t>(aec_error_reason()),
+          static_cast<std::uint32_t>(noise_error_reason()),
+          impl_->protected_miss_frames.load(), impl_->gpu_deadline_misses.load(),
+          impl_->queue_overruns.load(), impl_->output_underrun_samples.load(),
+          impl_->aec_processed_frames.load(), impl_->noise_processed_frames.load(),
+          impl_->gpu_run_max_us.load(), impl_->gpu_priority_class,
+          impl_->gpu_priority_status, impl_->shared_cuda_context};
+}
+#endif
 
 }  // namespace echonull

@@ -31,7 +31,7 @@ class NvafxDenoiser {
   NvafxDenoiser(const NvafxDenoiser&) = delete;
   NvafxDenoiser& operator=(const NvafxDenoiser&) = delete;
 
-  void initialize();
+  void initialize(bool use_current_cuda_context = false);
   void reset() noexcept;
   void set_intensity(float intensity);
   void process(std::span<const float> input, std::span<float> output);

@@ -153,7 +153,7 @@ std::pair<std::wstring, bool> runtime_status_values(
       return {L"NOISE REMOVAL ACTIVE", true};
     }
     if (noise_state == echonull::NoiseRuntimeState::overloaded) {
-      return {L"GPU BUSY · NOISE TEMPORARILY BYPASSED", false};
+      return {L"GPU DEADLINE MISSED · OUTPUT PROTECTED", false};
     }
     return {noise_error == echonull::PluginErrorReason::model_missing
                 ? L"NOISE MODEL MISSING · BYPASS"
@@ -164,7 +164,7 @@ std::pair<std::wstring, bool> runtime_status_values(
     case echonull::PluginRuntimeState::waiting_for_reference:
       if (noise_on &&
           noise_state == echonull::NoiseRuntimeState::overloaded) {
-        return {L"WAITING FOR PLAYBACK · NOISE TEMPORARILY BYPASSED", true};
+        return {L"WAITING FOR PLAYBACK · GPU DEADLINE MISSED", false};
       }
       if (noise_on && noise_state == echonull::NoiseRuntimeState::error) {
         return {noise_error == echonull::PluginErrorReason::model_missing
@@ -177,7 +177,7 @@ std::pair<std::wstring, bool> runtime_status_values(
     case echonull::PluginRuntimeState::aec_active:
       if (noise_on &&
           noise_state == echonull::NoiseRuntimeState::overloaded) {
-        return {L"RTX AEC ACTIVE · NOISE TEMPORARILY BYPASSED", true};
+        return {L"GPU DEADLINE MISSED · OUTPUT PROTECTED", false};
       }
       if (noise_on && noise_state == echonull::NoiseRuntimeState::error) {
         return {noise_error == echonull::PluginErrorReason::model_missing
@@ -196,7 +196,7 @@ std::pair<std::wstring, bool> runtime_status_values(
                          : L"NVIDIA RUNTIME / GPU ERROR · BYPASS"),
               false};
     case echonull::PluginRuntimeState::overloaded:
-      return {L"GPU BUSY · EFFECTS TEMPORARILY BYPASSED", false};
+      return {L"GPU DEADLINE MISSED · OUTPUT PROTECTED", false};
     case echonull::PluginRuntimeState::idle:
     default:
       return {L"IDLE", true};
@@ -228,8 +228,8 @@ void refresh_editor(EffectInstance& value) {
             echonull::PluginRuntimeState::overloaded ||
         static_cast<echonull::NoiseRuntimeState>(telemetry->noise_state) ==
             echonull::NoiseRuntimeState::overloaded) {
-      status += L" · DRY FALLBACK " +
-                std::to_wstring(telemetry->fallback_frames);
+      status += L" · MISSED FRAMES " +
+                std::to_wstring(telemetry->protected_miss_frames);
       if (telemetry->gpu_deadline_misses != 0) {
         status += L" · GPU LATE " +
                   std::to_wstring(telemetry->gpu_deadline_misses);
@@ -500,7 +500,7 @@ extern "C" __declspec(dllexport) vst_effect_t* VSTPluginMain(
   self->effect.input_output_ratio = 1.0F;
   self->effect.effect_internal = self;
   self->effect.unique_id = static_cast<int32_t>(VST_FOURCC('E', 'N', 'A', 'C'));
-  self->effect.version = 107;
+  self->effect.version = 108;
   self->effect.process_float = &process;
   return &self->effect;
 }

@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "application/delay_estimator.hpp"
-#include "application/output_transition.hpp"
+#include "application/protected_output.hpp"
 #include "application/streaming_resampler.hpp"
 #include "application/timestamped_audio_buffer.hpp"
 #include "infrastructure/equalizer_apo_config.hpp"
@@ -113,23 +113,31 @@ void test_streaming_resampler_equal_rate_is_bit_exact() {
   require(actual == input, "equal-rate resampler changed audio samples");
 }
 
-void test_output_transition_smooths_fallback() {
-  echonull::OutputTransition transition;
-  std::vector<float> dry(480, 0.2F);
+void test_protected_output_never_exposes_raw_on_gpu_miss() {
+  echonull::ProtectedOutput transition;
+  std::vector<float> dry(480, 0.9F);
   std::vector<float> wet(480, -0.4F);
   std::vector<float> output(480);
-  transition.render(dry, dry, false, output);
-  transition.render(dry, wet, true, output);
-  require(std::abs(output.front() - dry.front()) < 0.01F &&
+  transition.render(dry, wet, true, true, output);
+  require(std::abs(output.front()) < 0.01F &&
               std::abs(output.back() - wet.back()) < 1.0e-6F,
-          "dry-to-wet transition has a discontinuity");
-  transition.render(dry, dry, false, output);
+          "processed startup did not fade in from silence");
+  transition.render(dry, wet, true, true, output);
+  require(output == wet, "steady GPU output was changed");
+  transition.render(dry, {}, true, false, output);
   require(std::abs(output.front() - wet.back()) < 0.01F &&
-              std::abs(output.back() - dry.back()) < 1.0e-6F,
-          "wet-to-dry fallback has a discontinuity");
-  transition.render(dry, dry, false, output);
-  require(output.front() == dry.front(),
-          "steady dry fallback was altered");
+              output.back() == 0.0F &&
+              std::all_of(output.begin(), output.end(), [](float x) { return x <= 0; }),
+          "GPU miss exposed unprocessed audio or clicked");
+  // A partial chain is not a successful result, even if it has audio samples.
+  transition.render(dry, dry, true, false, output);
+  require(std::all_of(output.begin(), output.end(), [](float x) { return x == 0; }),
+          "incomplete AEC/noise chain exposed raw audio");
+  transition.render(dry, wet, true, true, output);
+  require(std::abs(output.front()) < 0.01F && output.back() == wet.back(),
+          "GPU recovery did not use the processed signal");
+  transition.render(dry, {}, false, false, output);
+  require(output == dry, "explicit effect bypass changed the input");
 }
 
 void test_telemetry_bus_roundtrip() {
@@ -146,7 +154,7 @@ void test_telemetry_bus_roundtrip() {
   echonull::TelemetryBusReader reader;
   require(reader.open(), "telemetry reader could not open the writer mapping");
   const echonull::TelemetrySnapshot expected{
-      now_hns, 0.625F, 3, 1, 0, 0, 7, 5, 3, 11};
+      now_hns, 0.625F, 3, 1, 0, 0, 7, 5, 3, 11, 100, 100, 12345, 4, 0, 1};
   writer.publish(expected);
   const auto actual = reader.read_latest();
   require(actual.has_value(), "telemetry bus returned no fresh snapshot");
@@ -155,12 +163,16 @@ void test_telemetry_bus_roundtrip() {
   require(actual->runtime_state == expected.runtime_state &&
               actual->noise_state == expected.noise_state,
           "telemetry bus changed the runtime state");
-  require(actual->fallback_frames == expected.fallback_frames &&
+  require(actual->protected_miss_frames == expected.protected_miss_frames &&
               actual->gpu_deadline_misses == expected.gpu_deadline_misses &&
               actual->queue_overruns == expected.queue_overruns &&
               actual->output_underrun_samples ==
                   expected.output_underrun_samples,
           "telemetry bus changed the real-time diagnostics");
+  require(actual->aec_processed_frames == 100 && actual->noise_processed_frames == 100 &&
+              actual->gpu_run_max_us == 12345 && actual->gpu_priority_class == 4 &&
+              actual->gpu_priority_status == 0 && actual->shared_cuda_context == 1,
+          "telemetry bus lost GPU execution diagnostics");
 
   auto stale = expected;
   stale.timestamp_hns = now_hns - 30'000'000;
@@ -190,7 +202,7 @@ void test_async_diagnostic_log() {
     echonull::AsyncDiagnosticLog log;
     log.open();
     log.publish(echonull::TelemetrySnapshot{
-        60'000'000, 0.5F, 5, 3, 3, 0, 4, 2, 1, 17});
+        60'000'000, 0.5F, 5, 3, 3, 0, 4, 2, 1, 17, 123, 123, 17000, 4, 0, 1});
     log.close();
   }
   SetEnvironmentVariableW(L"ECHONULL_LOG_ROOT", nullptr);
@@ -201,10 +213,13 @@ void test_async_diagnostic_log() {
               contents.find("aec_error=runtime_or_gpu") !=
                   std::string::npos,
           "diagnostic log omitted the runtime error");
-  require(contents.find("dry_fallback_frames=4") != std::string::npos &&
+  require(contents.find("protected_miss_frames=4") != std::string::npos &&
               contents.find("output_underrun_samples=17") !=
                   std::string::npos,
           "diagnostic log omitted the real-time counters");
+  require(contents.find("GPU_SETUP priority_class=4 priority_status=0 shared_cuda_context=1") != std::string::npos &&
+              contents.find("aec_processed_frames=123 noise_processed_frames=123 gpu_run_max_us=17000") != std::string::npos,
+          "diagnostic log omitted GPU setup or effect progress");
   require(contents.find("pid=" + std::to_string(GetCurrentProcessId()) +
                             " session=") != std::string::npos,
           "diagnostic log omitted its process and session identity");
@@ -276,7 +291,7 @@ int main() {
     test_delay_estimator();
     test_streaming_resampler_is_chunk_invariant();
     test_streaming_resampler_equal_rate_is_bit_exact();
-    test_output_transition_smooths_fallback();
+    test_protected_output_never_exposes_raw_on_gpu_miss();
     test_telemetry_bus_roundtrip();
     test_async_diagnostic_log();
     test_equalizer_apo_capture_scope();

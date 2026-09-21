@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(EchoNull VERSION 0.1.7 LANGUAGES CXX)
+project(EchoNull VERSION 0.1.8 LANGUAGES CXX)
 
 if(NOT WIN32)
   message(FATAL_ERROR "EchoNull currently supports Windows only.")
@@ -47,7 +47,7 @@ if(ECHONULL_NVAFX_INCLUDE_DIR)
 else()
   message(WARNING
     "NVIDIA AFX SDK was not found. The plug-in and tests will build, but "
-    "AEC processing will stay in safe bypass mode. "
+    "GPU effects will be unavailable; this build is for host/UI tests. "
     "Configure with -DAFX_SDK_ROOT=<path> after installing AFX SDK 2.1 or newer.")
 endif()
 
@@ -68,6 +68,7 @@ endif()
 
 add_library(echonull_infrastructure
   src/infrastructure/equalizer_apo_config.cpp
+  src/infrastructure/nvidia/cuda_audio_context.cpp
   src/infrastructure/nvidia/nvafx_api.cpp
   src/infrastructure/nvidia/nvafx_aec.cpp
   src/infrastructure/nvidia/nvafx_denoiser.cpp
@@ -75,6 +76,7 @@ add_library(echonull_infrastructure
   src/infrastructure/text_encoding.cpp
   src/infrastructure/windows/device_manager.cpp
   src/infrastructure/windows/diagnostic_log.cpp
+  src/infrastructure/windows/gpu_priority.cpp
   src/infrastructure/windows/equalizer_apo.cpp
   src/infrastructure/windows/realtime_audio_thread.cpp
   src/infrastructure/windows/telemetry_bus.cpp
@@ -218,6 +220,14 @@ endif()
 
 if(ECHONULL_BUILD_TESTS)
   include(CTest)
+  if(ECHONULL_HAS_NVAFX)
+    add_executable(echonull_nvafx_benchmark tests/nvafx_benchmark.cpp)
+    target_link_libraries(echonull_nvafx_benchmark PRIVATE echonull_infrastructure)
+    add_executable(echonull_pipeline_benchmark tests/pipeline_benchmark.cpp
+      src/plugin/plugin_processor.cpp)
+    target_compile_definitions(echonull_pipeline_benchmark PRIVATE ECHONULL_PROCESSOR_TESTING=1)
+    target_link_libraries(echonull_pipeline_benchmark PRIVATE echonull_infrastructure)
+  endif()
   add_executable(echonull_tests
     tests/core_tests.cpp)
   target_link_libraries(echonull_tests PRIVATE echonull_application echonull_infrastructure)

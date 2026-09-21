@@ -18,6 +18,7 @@ class NvafxAec final : public IAecProcessor {
   NvafxAec& operator=(const NvafxAec&) = delete;
 
   void initialize() override;
+  void initialize(bool use_current_cuda_context);
   void reset() override;
   void set_intensity(float intensity);
   void process(std::span<const float> near_end,

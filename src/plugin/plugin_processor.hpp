@@ -6,6 +6,10 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#ifdef ECHONULL_PROCESSOR_TESTING
+#include <vector>
+#include "infrastructure/windows/telemetry_bus.hpp"
+#endif
 
 namespace echonull {
 
@@ -44,6 +48,11 @@ class PluginProcessor {
   void stop() noexcept;
   void process(const float* const* inputs, float** outputs,
                std::int32_t sample_count, std::uint32_t channel_count) noexcept;
+#ifdef ECHONULL_PROCESSOR_TESTING
+  void test_feed_reference(std::int64_t timestamp, std::vector<float> samples);
+  void test_delay_next_job(std::uint32_t milliseconds);
+  [[nodiscard]] TelemetrySnapshot test_diagnostics() const;
+#endif
 
   [[nodiscard]] const std::wstring& reference_endpoint() const noexcept {
     return reference_endpoint_id_;

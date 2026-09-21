@@ -50,9 +50,10 @@ NvafxDenoiser::NvafxDenoiser(std::vector<std::filesystem::path> model_paths,
 
 NvafxDenoiser::~NvafxDenoiser() { reset(); }
 
-void NvafxDenoiser::initialize() {
+void NvafxDenoiser::initialize(const bool use_current_cuda_context) {
   reset();
 #if !ECHONULL_HAS_NVAFX
+  static_cast<void>(use_current_cuda_context);
   {
     std::scoped_lock lock(impl_->mutex);
     impl_->status.error = "EchoNull was built without the NVIDIA AFX SDK";
@@ -76,6 +77,10 @@ void NvafxDenoiser::initialize() {
     }
     check(api.create_effect("denoiser", &impl_->handle),
           "NvAFX_CreateEffect(denoiser)");
+    if (use_current_cuda_context) {
+      check(api.set_u32(impl_->handle, NVAFX_PARAM_USER_CUDA_CONTEXT, 1),
+            "NvAFX_SetU32(user_cuda_context)");
+    }
     const auto model_utf8 = model_path.u8string();
     const auto* model = reinterpret_cast<const char*>(model_utf8.c_str());
     check(api.set_string(impl_->handle, NVAFX_PARAM_MODEL_PATH, model),

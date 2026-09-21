@@ -14,10 +14,16 @@ struct TelemetrySnapshot {
   std::uint32_t noise_state = 0;
   std::uint32_t aec_error = 0;
   std::uint32_t noise_error = 0;
-  std::uint64_t fallback_frames = 0;
+  std::uint64_t protected_miss_frames = 0;
   std::uint64_t gpu_deadline_misses = 0;
   std::uint64_t queue_overruns = 0;
   std::uint64_t output_underrun_samples = 0;
+  std::uint64_t aec_processed_frames = 0;
+  std::uint64_t noise_processed_frames = 0;
+  std::uint64_t gpu_run_max_us = 0;
+  std::uint32_t gpu_priority_class = 0;
+  std::uint32_t gpu_priority_status = 0;
+  std::uint32_t shared_cuda_context = 0;
 };
 
 [[nodiscard]] bool is_windows_audio_engine_process();

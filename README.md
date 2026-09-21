@@ -58,8 +58,8 @@ EchoNull never creates a second playback instance and therefore adds no
 processing or latency to the playback pipeline.
 
 The live capture instance in `audiodg.exe` publishes its processed output level
-and runtime state through a read-only telemetry mapping. It also reports dry
-fallbacks, late GPU frames, queue pressure, and output-buffer recovery counts.
+and runtime state through a read-only telemetry mapping. It also reports GPU
+deadline misses, completed AEC/Noise frames, queue pressure, and output underruns.
 The editor reads that mapping, so the meter represents the active microphone
 pipeline rather than the Configuration Editor's preview instance. Stale
 telemetry is shown as `AUDIO ENGINE OFFLINE`.
@@ -128,20 +128,48 @@ required by NvAFX AEC, then converted back to the capture pipeline's rate.
 
 Noise Removal defaults to off. It becomes available when the release was built
 with NVIDIA's 48 kHz Denoiser feature; otherwise enabling it produces the
-explicit `NOISE MODEL MISSING` status while AEC continues to work.
+explicit `NOISE MODEL MISSING` status. Disable the unavailable Noise Removal
+option to continue with AEC alone; an incomplete requested chain is not output.
 
 EchoNull keeps NvAFX inference off the `audiodg.exe` real-time callback. A
-dedicated MMCSS worker processes fixed 10 ms frames while the callback retains
-a short, fixed-latency dry copy. If a GPU result misses that window, EchoNull
-uses the matching delayed dry frame instead of inserting a zero-filled gap.
-Sustained contention temporarily sheds Noise Removal first and then AEC so
-voice continuity takes priority over an effect. The panel reports the temporary
-bypass and its diagnostic counters.
+dedicated MMCSS worker processes fixed 10 ms frames. Both enabled effects stay
+on the NVIDIA GPU; there is no CPU fallback or automatic effect shedding.
+AEC and Noise Removal share a worker-owned CUDA context where available. The
+audio-engine process requests WDDM GPU scheduling class `HIGH` (not `REALTIME`);
+the actual class and any denial are logged, and the original class is restored
+when the last EchoNull worker stops. This is a scheduling preference, not a
+guaranteed GPU reservation. No game, HAGS, driver, or system power setting is changed.
+The implementation uses Microsoft's
+[process GPU scheduling API](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dkmthk/nf-d3dkmthk-d3dkmtsetprocessschedulingpriorityclass)
+and NVIDIA's documented
+[user CUDA context option](https://docs.nvidia.com/maxine/afx/2.1.0/UseAFXInApps/UseMultipleGPUs.html).
+
+The output lead is 80 ms (20 ms more than v0.1.7), allowing for frame assembly
+and resampler lookahead. Results are selected only when audio is actually needed,
+rather than discarded early at a separate 40 ms cutoff. A 10 ms inference
+overrun is diagnostic only: it does not disable AEC or Noise Removal. If a
+result still cannot meet its real output deadline, the affected frame fades
+to silence and the panel reports `GPU DEADLINE MISSED · OUTPUT PROTECTED`.
+It never substitutes raw microphone audio for a missing or partial GPU result.
+This last-resort protection prevents noise/echo leakage but is still an audible
+failure, not a claim that arbitrary GPU stalls can be made gap-free.
+Both models are also run with silent warm-up frames before capture begins,
+so lazy CUDA/TensorRT initialization does not block the first live GPU frame.
 
 Runtime diagnostics are written asynchronously to
 `C:\ProgramData\EchoNull\Logs\EchoNull.log`. The file records model/runtime
-errors and coalesced real-time fallback, GPU deadline, queue, and buffer counts;
+errors, actual GPU scheduling/context setup, completed effect-frame counts,
+peak inference time, protected misses, queue pressure, and buffer counts;
 it rotates to `EchoNull.log.1` at 2 MB. File I/O never runs on the audio callback.
+
+The manual `echonull_nvafx_benchmark` and `echonull_pipeline_benchmark` targets
+use nonzero synthetic input without opening audio devices or recording speech.
+The latter exercises the real worker, queues, 96 kHz stereo conversion, output
+deadline policy, and optional injected GPU-worker delays. For bounded synthetic
+GPU contention, `tools/benchmark_gpu_contention.py` requires a CUDA-enabled
+PyTorch installation; it logs observed utilization and stops at 80 C or 90 seconds.
+See [the local validation results](docs/gpu-contention-validation.md) for measured
+frame counts, timing, reproduction commands and test limitations.
 
 ## Build
 
