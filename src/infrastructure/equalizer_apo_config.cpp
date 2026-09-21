@@ -110,6 +110,39 @@ std::string install_echonull_capture_scope(const std::string_view config) {
       config.find("\r\n") != std::string_view::npos ? "\r\n" : "\n";
   const bool trailing_newline = !config.empty() && config.back() == '\n';
   const auto input = split_lines(config);
+
+  // Earlier installers may have wrapped an already capture-scoped VST in an
+  // owned If block. Collapse only that exact generated block on repair.
+  bool capture_stage = false;
+  for (std::size_t index = 0; index < input.size(); ++index) {
+    const auto normalized = lowercase_trimmed(input[index]);
+    if (normalized.starts_with("stage:")) {
+      capture_stage = lowercase_trimmed(normalized.substr(6)) == "capture";
+    }
+    if (capture_stage && index + 4 < input.size() &&
+        normalized == lowercase_trimmed(kBeginMarker) &&
+        lowercase_trimmed(input[index + 1]) ==
+            "if: stage == \"capture\"" &&
+        is_active_echonull_plugin(input[index + 2]) &&
+        lowercase_trimmed(input[index + 3]) == "endif:" &&
+        lowercase_trimmed(input[index + 4]) ==
+            lowercase_trimmed(kEndMarker)) {
+      std::vector<std::string> simplified;
+      simplified.reserve(input.size() - 4);
+      simplified.insert(simplified.end(), input.begin(),
+                        input.begin() + static_cast<std::ptrdiff_t>(index));
+      simplified.push_back(input[index + 2]);
+      simplified.insert(simplified.end(),
+                        input.begin() + static_cast<std::ptrdiff_t>(index + 5),
+                        input.end());
+      return join_lines(simplified, newline, trailing_newline);
+    }
+  }
+
+  // A user-provided capture Stage already scopes the plug-in. Preserve its
+  // position and saved VST state instead of adding a redundant conditional.
+  if (has_capture_scoped_echonull(config)) return std::string(config);
+
   std::vector<std::string> filtered;
   filtered.reserve(input.size() + 6);
   std::string plugin_line;
@@ -175,7 +208,7 @@ std::string remove_echonull_capture_scope(const std::string_view config) {
       if (normalized == lowercase_trimmed(kEndMarker)) in_owned_block = false;
       continue;
     }
-    filtered.push_back(line);
+    if (!is_active_echonull_plugin(line)) filtered.push_back(line);
   }
   if (!filtered.empty() && filtered.back().empty()) filtered.pop_back();
   return join_lines(filtered, newline, trailing_newline && !filtered.empty());

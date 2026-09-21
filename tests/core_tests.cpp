@@ -239,6 +239,33 @@ void test_equalizer_apo_capture_scope() {
   require(echonull::has_capture_scoped_echonull(
               "Stage: capture\nVSTPlugin: Library EchoNullPlugin.dll\n"),
           "legacy capture Stage configuration was rejected");
+  const std::string existing_stage =
+      "Stage: capture\r\n"
+      "VSTPlugin: Library EchoNullPlugin.dll ChunkData \"saved\"\r\n"
+      "# VSTPlugin: Library ReverbSolo.dll\r\n";
+  require(echonull::install_echonull_capture_scope(existing_stage) ==
+              existing_stage,
+          "installer added a redundant block to a capture-scoped plug-in");
+  const std::string redundant_old_block =
+      "Stage: capture\r\n"
+      "# EchoNull setup begin\r\n"
+      "If: stage == \"capture\"\r\n"
+      "VSTPlugin: Library EchoNullPlugin.dll ChunkData \"saved\"\r\n"
+      "EndIf:\r\n"
+      "# EchoNull setup end\r\n";
+  require(echonull::install_echonull_capture_scope(redundant_old_block) ==
+              "Stage: capture\r\n"
+              "VSTPlugin: Library EchoNullPlugin.dll ChunkData \"saved\"\r\n",
+          "installer failed to remove an old redundant capture block");
+  const auto removed_stage_plugin =
+      echonull::remove_echonull_capture_scope(existing_stage);
+  require(removed_stage_plugin.find("EchoNullPlugin.dll") ==
+              std::string::npos &&
+              removed_stage_plugin.find("Stage: capture") !=
+                  std::string::npos &&
+              removed_stage_plugin.find("ReverbSolo.dll") !=
+                  std::string::npos,
+          "uninstaller changed unrelated capture configuration");
 }
 
 }  // namespace

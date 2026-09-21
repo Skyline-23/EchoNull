@@ -102,8 +102,11 @@ NVIDIA headers.
    | GeForce RTX 40 | `EchoNullSetup-Ada-RTX40.exe` |
    | GeForce RTX 50 | `EchoNullSetup-Blackwell-RTX50.exe` |
 
-2. Run setup and choose **Install EchoNull**. It copies the self-contained DLL
-   and scopes the plug-in with `If: stage == "capture"`; no manual Stage row is
+2. Run setup and choose **Install EchoNull**. It copies the self-contained DLL.
+   If EchoNull is already under a capture `Stage`, setup preserves that row and
+   the saved plug-in settings, and removes any redundant setup-created
+   condition block. Otherwise, setup
+   scopes the plug-in with `If: stage == "capture"`; no manual Stage row is
    required. The same setup file can repair, update, or remove EchoNull. Setup
    temporarily stops active services that depend on Windows Audio (including
    vendor audio helpers) and restores them after the plug-in is replaced.
