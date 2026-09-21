@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "application/delay_estimator.hpp"
+#include "application/output_transition.hpp"
 #include "application/streaming_resampler.hpp"
 #include "application/timestamped_audio_buffer.hpp"
 #include "infrastructure/equalizer_apo_config.hpp"
@@ -112,6 +113,25 @@ void test_streaming_resampler_equal_rate_is_bit_exact() {
   require(actual == input, "equal-rate resampler changed audio samples");
 }
 
+void test_output_transition_smooths_fallback() {
+  echonull::OutputTransition transition;
+  std::vector<float> dry(480, 0.2F);
+  std::vector<float> wet(480, -0.4F);
+  std::vector<float> output(480);
+  transition.render(dry, dry, false, output);
+  transition.render(dry, wet, true, output);
+  require(std::abs(output.front() - dry.front()) < 0.01F &&
+              std::abs(output.back() - wet.back()) < 1.0e-6F,
+          "dry-to-wet transition has a discontinuity");
+  transition.render(dry, dry, false, output);
+  require(std::abs(output.front() - wet.back()) < 0.01F &&
+              std::abs(output.back() - dry.back()) < 1.0e-6F,
+          "wet-to-dry fallback has a discontinuity");
+  transition.render(dry, dry, false, output);
+  require(output.front() == dry.front(),
+          "steady dry fallback was altered");
+}
+
 void test_telemetry_bus_roundtrip() {
   LARGE_INTEGER counter{};
   LARGE_INTEGER frequency{};
@@ -185,6 +205,9 @@ void test_async_diagnostic_log() {
               contents.find("output_underrun_samples=17") !=
                   std::string::npos,
           "diagnostic log omitted the real-time counters");
+  require(contents.find("pid=" + std::to_string(GetCurrentProcessId()) +
+                            " session=") != std::string::npos,
+          "diagnostic log omitted its process and session identity");
   input.close();
   std::filesystem::remove_all(directory);
 }
@@ -226,6 +249,7 @@ int main() {
     test_delay_estimator();
     test_streaming_resampler_is_chunk_invariant();
     test_streaming_resampler_equal_rate_is_bit_exact();
+    test_output_transition_smooths_fallback();
     test_telemetry_bus_roundtrip();
     test_async_diagnostic_log();
     test_equalizer_apo_capture_scope();

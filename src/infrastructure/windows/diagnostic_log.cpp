@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -16,6 +17,7 @@ namespace {
 
 constexpr std::uint64_t kMaximumLogBytes = 2U * 1024U * 1024U;
 constexpr std::int64_t kStatisticsIntervalHns = 50'000'000;
+std::atomic<std::uint64_t> next_session_id{1};
 
 std::filesystem::path environment_path(const wchar_t* name) {
   const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
@@ -151,6 +153,10 @@ AsyncDiagnosticLog::~AsyncDiagnosticLog() { close(); }
 void AsyncDiagnosticLog::open() {
   close();
   const auto path = log_path();
+  const auto identity =
+      " pid=" + std::to_string(GetCurrentProcessId()) +
+      " session=" + std::to_string(
+          next_session_id.fetch_add(1, std::memory_order_relaxed));
   impl_->wake_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
   if (impl_->wake_event == nullptr) {
     throw std::runtime_error("could not create the diagnostic log event");
@@ -160,12 +166,12 @@ void AsyncDiagnosticLog::open() {
     impl_->stop = false;
     impl_->has_pending = false;
   }
-  impl_->writer = std::thread([this, path] {
+  impl_->writer = std::thread([this, path, identity] {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     rotate_if_needed(path);
     std::ofstream output(path, std::ios::binary | std::ios::app);
     if (!output) return;
-    write_line(output, "SESSION started");
+    write_line(output, "SESSION started" + identity);
 
     TelemetrySnapshot previous{};
     std::int64_t last_statistics_hns = 0;
@@ -194,7 +200,8 @@ void AsyncDiagnosticLog::open() {
                          std::string(runtime_name(snapshot.runtime_state)) +
                          " noise_state=" + noise_state_name(snapshot.noise_state) +
                          " aec_error=" + error_name(snapshot.aec_error) +
-                         " noise_error=" + error_name(snapshot.noise_error));
+                         " noise_error=" + error_name(snapshot.noise_error) +
+                         identity);
         }
         const bool counters_changed =
             snapshot.fallback_frames != previous.fallback_frames ||
@@ -214,14 +221,15 @@ void AsyncDiagnosticLog::open() {
                          " queue_overruns=" +
                          std::to_string(snapshot.queue_overruns) +
                          " output_underrun_samples=" +
-                         std::to_string(snapshot.output_underrun_samples));
+                         std::to_string(snapshot.output_underrun_samples) +
+                         identity);
           last_statistics_hns = snapshot.timestamp_hns;
         }
         previous = snapshot;
       }
       if (stopping) break;
     }
-    write_line(output, "SESSION stopped");
+    write_line(output, "SESSION stopped" + identity);
   });
 }
 
