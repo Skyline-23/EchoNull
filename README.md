@@ -54,9 +54,9 @@ Applying a reference stores the selected endpoint ID in the existing VST
 instance's standard `ChunkData`. Equalizer APO's Auto Apply owns that state.
 The setup program preserves the existing EchoNull line and its ChunkData,
 and repairs an unscoped Stage to capture-only. It does not generate new marker
-comments or `If` / `EndIf` blocks. Existing capture scopes, including legacy
-blocks, are preserved unchanged. Repeated updates add no rows. Other filters
-retain their stages.
+comments or `If` / `EndIf` blocks. Exact obsolete setup-owned wrappers are
+collapsed; user-written scopes and filters remain unchanged. Repeated updates
+add no rows. Other filters retain their stages.
 With a capture-only Stage, EchoNull adds no processing to the playback pipeline.
 
 The live capture instance in `audiodg.exe` publishes its processed output level
@@ -75,7 +75,7 @@ domain
   audio endpoint and status models
       ^
 application
-  resampling, timestamp buffers, delay estimation
+  resampling and timestamp buffers
       ^
 infrastructure
   NvAFX, endpoint discovery, WASAPI loopback, cross-session telemetry
@@ -104,8 +104,10 @@ NVIDIA headers.
    | GeForce RTX 40 | `EchoNullSetup-Ada-RTX40.exe` |
    | GeForce RTX 50 | `EchoNullSetup-Blackwell-RTX50.exe` |
 
-2. First enable the existing microphone and reference playback device in Equalizer
-   APO Device Selector. Then run setup and choose **Install EchoNull**.
+2. Open Equalizer APO Device Selector **before running EchoNull Setup**. Enable
+   capture processing on the existing microphone and post-mix processing on
+   playback devices you want listed in the selector.
+3. Run setup and choose **Install EchoNull**.
    It copies the self-contained DLL and moves Equalizer APO on already-selected
    microphones from stream effects to endpoint effects, before shared capture
    streams split. This includes shared-mode RAW clients. The original vendor
@@ -118,11 +120,10 @@ NVIDIA headers.
    update, or remove EchoNull. Setup
    temporarily stops active services that depend on Windows Audio (including
    vendor audio helpers) and restores them after the plug-in is replaced.
-3. Open Equalizer APO Device Selector. Enable capture processing on the existing
-   microphone and post-mix processing on playback devices you want listed in
-   the selector. This device registration is separate from the **Stage row above
-   EchoNull**, which must have only **Capture** checked. Checking **Post-mix** on
-   that row also applies the microphone effects to speaker output.
+   Device registration is separate from the **Stage row above EchoNull**, which
+   must have only **Capture** checked. Checking **Post-mix** on that row also
+   applies the microphone effects to speaker output. If you later change a
+   microphone in Device Selector, rerun EchoNull Setup to restore its endpoint hook.
 4. Open the embedded panel, choose the playback reference, and press
    **APPLY REFERENCE**.
 
