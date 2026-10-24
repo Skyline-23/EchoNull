@@ -37,6 +37,7 @@ On Windows with an RTX 5070 Ti and a 96 kHz stereo USB microphone:
 | Installed ordinary shared capture | GPU processing advanced; no AEC/noise error |
 | Installed DLL identity | SHA-256 matched the locally built DLL |
 | User playback interval after installation | Approximately 51.7 dB aggregate AEC input/output energy ratio; reference present; no protected misses or queue overruns |
+| User's Discord listening check after the final installation | User confirmed normal voice transmission and no audible speaker echo |
 
 The live energy ratio is an observed interval, not a standardized ERLE test or a
 guarantee for all rooms, content, microphone gain, or simultaneous speech. No
