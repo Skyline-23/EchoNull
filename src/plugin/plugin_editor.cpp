@@ -255,7 +255,7 @@ void PluginEditor::refresh() {
       SendMessageW(playback_combo_, CB_SETCURSEL,
                    selected_item == CB_ERR ? 0 : selected_item, 0);
       EnableWindow(apply_button_, FALSE);
-      set_status(L"Run EchoNullSetup to install capture scope, then press Refresh.",
+      set_status(L"Set the Stage above EchoNull to Capture only, then press Refresh.",
                  false);
     } else {
       SendMessageW(playback_combo_, CB_SETCURSEL,

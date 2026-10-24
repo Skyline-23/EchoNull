@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(EchoNull VERSION 0.1.8 LANGUAGES CXX)
+project(EchoNull VERSION 0.1.9 LANGUAGES CXX)
 
 if(NOT WIN32)
   message(FATAL_ERROR "EchoNull currently supports Windows only.")

@@ -237,9 +237,13 @@ void test_equalizer_apo_capture_scope() {
           "installer did not capture-scope EchoNull");
   require(installed.find("ChunkData \"saved\"") != std::string::npos,
           "installer discarded EchoNull VST state");
-  require(installed.find("If: stage == \"capture\"") != std::string::npos &&
-              installed.find("EndIf:") != std::string::npos,
-          "installer did not close the capture condition");
+  require(installed ==
+              "Preamp: -3 dB\r\n"
+              "Stage: capture\r\n"
+              "VSTPlugin: Library EchoNullPlugin.dll ChunkData \"saved\"\r\n"
+              "Stage: post-mix capture\r\n"
+              "Filter: ON HP Fc 80 Hz\r\n",
+          "installer did not preserve unrelated filters' original stages");
   require(echonull::install_echonull_capture_scope(installed) == installed,
           "installer capture block is not idempotent");
   const auto removed = echonull::remove_echonull_capture_scope(installed);
@@ -261,6 +265,22 @@ void test_equalizer_apo_capture_scope() {
   require(echonull::install_echonull_capture_scope(existing_stage) ==
               existing_stage,
           "installer added a redundant block to a capture-scoped plug-in");
+  const std::string mixed_stage =
+      "Stage: post-mix capture\r\n"
+      "VSTPlugin: Library EchoNullPlugin.dll ChunkData \"saved\"\r\n"
+      "# VSTPlugin: Library ReverbSolo.dll\r\n";
+  auto repaired = echonull::install_echonull_capture_scope(mixed_stage);
+  require(repaired == existing_stage,
+          "mixed playback/capture Stage was not repaired in place");
+  for (int update = 0; update < 20; ++update) {
+    repaired = echonull::install_echonull_capture_scope(repaired);
+    require(repaired == existing_stage,
+            "repeated updates changed the user's Stage or plug-in state");
+  }
+  const auto fresh = echonull::install_echonull_capture_scope("");
+  require(fresh == "Stage: capture\nVSTPlugin: Library EchoNullPlugin.dll\n" &&
+              echonull::install_echonull_capture_scope(fresh) == fresh,
+          "fresh install created a wrapper or duplicated a row");
   const std::string redundant_old_block =
       "Stage: capture\r\n"
       "# EchoNull setup begin\r\n"
@@ -269,9 +289,42 @@ void test_equalizer_apo_capture_scope() {
       "EndIf:\r\n"
       "# EchoNull setup end\r\n";
   require(echonull::install_echonull_capture_scope(redundant_old_block) ==
-              "Stage: capture\r\n"
-              "VSTPlugin: Library EchoNullPlugin.dll ChunkData \"saved\"\r\n",
-          "installer failed to remove an old redundant capture block");
+              redundant_old_block,
+          "update modified an existing setup block");
+  const std::string wrapped_mixed =
+      "Stage: post-mix capture\n"
+      "# EchoNull setup begin\n"
+      "If: stage == \"capture\"\n"
+      "VSTPlugin: Library EchoNullPlugin.dll ChunkData \"saved\"\n"
+      "EndIf:\n"
+      "# EchoNull setup end\n"
+      "Filter: ON HP Fc 80 Hz\n";
+  require(echonull::install_echonull_capture_scope(wrapped_mixed) == wrapped_mixed,
+          "update cleaned up a working legacy capture condition");
+  const std::string user_condition =
+      "If: stage == \"capture\"\n"
+      "VSTPlugin: Library EchoNullPlugin.dll ChunkData \"saved\"\n"
+      "EndIf:\n";
+  require(echonull::install_echonull_capture_scope(user_condition) == user_condition,
+          "installer rewrote a user-provided capture condition");
+  const std::string mixed_with_next_stage =
+      "Stage: post-mix capture\n"
+      "VSTPlugin: Library EchoNullPlugin.dll\n"
+      "Stage: post-mix\n"
+      "Preamp: -6 dB\n";
+  require(echonull::install_echonull_capture_scope(mixed_with_next_stage) ==
+              "Stage: capture\nVSTPlugin: Library EchoNullPlugin.dll\n"
+              "Stage: post-mix\nPreamp: -6 dB\n",
+          "installer added an unnecessary stage restoration");
+  const std::string foreign_in_marker =
+      "# EchoNull setup begin\n"
+      "If: stage == \"capture\"\n"
+      "VSTPlugin: Library EchoNullPlugin.dll\n"
+      "Filter: ON HP Fc 80 Hz\n"
+      "EndIf:\n"
+      "# EchoNull setup end\n";
+  require(echonull::install_echonull_capture_scope(foreign_in_marker) == foreign_in_marker,
+          "update changed user content in an existing capture block");
   const auto removed_stage_plugin =
       echonull::remove_echonull_capture_scope(existing_stage);
   require(removed_stage_plugin.find("EchoNullPlugin.dll") ==

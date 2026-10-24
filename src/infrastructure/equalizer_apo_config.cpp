@@ -109,87 +109,78 @@ std::string install_echonull_capture_scope(const std::string_view config) {
   const std::string_view newline =
       config.find("\r\n") != std::string_view::npos ? "\r\n" : "\n";
   const bool trailing_newline = !config.empty() && config.back() == '\n';
-  const auto input = split_lines(config);
-
-  // Earlier installers may have wrapped an already capture-scoped VST in an
-  // owned If block. Collapse only that exact generated block on repair.
-  bool capture_stage = false;
-  for (std::size_t index = 0; index < input.size(); ++index) {
-    const auto normalized = lowercase_trimmed(input[index]);
-    if (normalized.starts_with("stage:")) {
-      capture_stage = lowercase_trimmed(normalized.substr(6)) == "capture";
-    }
-    if (capture_stage && index + 4 < input.size() &&
-        normalized == lowercase_trimmed(kBeginMarker) &&
-        lowercase_trimmed(input[index + 1]) ==
-            "if: stage == \"capture\"" &&
-        is_active_echonull_plugin(input[index + 2]) &&
-        lowercase_trimmed(input[index + 3]) == "endif:" &&
-        lowercase_trimmed(input[index + 4]) ==
-            lowercase_trimmed(kEndMarker)) {
-      std::vector<std::string> simplified;
-      simplified.reserve(input.size() - 4);
-      simplified.insert(simplified.end(), input.begin(),
-                        input.begin() + static_cast<std::ptrdiff_t>(index));
-      simplified.push_back(input[index + 2]);
-      simplified.insert(simplified.end(),
-                        input.begin() + static_cast<std::ptrdiff_t>(index + 5),
-                        input.end());
-      return join_lines(simplified, newline, trailing_newline);
-    }
-  }
-
-  // A user-provided capture Stage already scopes the plug-in. Preserve its
-  // position and saved VST state instead of adding a redundant conditional.
+  // Existing capture scopes, including legacy setup blocks, are user state.
+  // Updates must leave them exactly as they are instead of cleaning them up.
   if (has_capture_scoped_echonull(config)) return std::string(config);
-
-  std::vector<std::string> filtered;
-  filtered.reserve(input.size() + 6);
-  std::string plugin_line;
-  std::size_t insertion_index = static_cast<std::size_t>(-1);
-  bool in_owned_block = false;
+  const auto input = split_lines(config);
+  std::vector<std::string> output;
+  output.reserve(input.size() + 2);
+  std::vector<ConditionalFrame> conditions;
+  constexpr auto no_stage = static_cast<std::size_t>(-1);
+  std::size_t reusable_stage = no_stage;
+  std::string original_stage = "Stage: post-mix capture";
+  std::string pending_restore;
+  bool capture_only = false;
+  bool found_plugin = false;
 
   for (const auto& line : input) {
     const auto normalized = lowercase_trimmed(line);
-    if (normalized == lowercase_trimmed(kBeginMarker)) {
-      if (insertion_index == static_cast<std::size_t>(-1)) {
-        insertion_index = filtered.size();
-      }
-      in_owned_block = true;
+    if (normalized.empty() || normalized.starts_with('#')) {
+      output.push_back(line);
       continue;
     }
-    if (in_owned_block) {
-      if (is_active_echonull_plugin(line) && plugin_line.empty()) {
-        plugin_line = line;
-      }
-      if (normalized == lowercase_trimmed(kEndMarker)) {
-        in_owned_block = false;
-      }
+    if (normalized.starts_with("stage:")) {
+      // A following explicit Stage supersedes any restoration we would need.
+      pending_restore.clear();
+      original_stage = line;
+      capture_only = lowercase_trimmed(normalized.substr(6)) == "capture";
+      reusable_stage = output.size();
+      output.push_back(line);
       continue;
     }
     if (is_active_echonull_plugin(line)) {
-      if (plugin_line.empty()) plugin_line = line;
-      if (insertion_index == static_cast<std::size_t>(-1)) {
-        insertion_index = filtered.size();
+      found_plugin = true;
+      if (!capture_only && !capture_condition_active(conditions)) {
+        if (reusable_stage != no_stage) {
+          output[reusable_stage] = "Stage: capture";
+        } else {
+          output.emplace_back("Stage: capture");
+        }
+        capture_only = true;
+        pending_restore = original_stage;
       }
+      output.push_back(line);  // Retain location and ChunkData byte-for-byte.
+      reusable_stage = no_stage;
       continue;
     }
-    filtered.push_back(line);
+    if (!pending_restore.empty()) {
+      // Other filters keep their former stage. A single-EchoNull config needs
+      // no restore row, comments, marker blocks, or generated conditionals.
+      output.push_back(std::move(pending_restore));
+      pending_restore.clear();
+      capture_only = false;
+    }
+    reusable_stage = no_stage;
+    if (normalized.starts_with("if:")) {
+      const bool capture =
+          lowercase_trimmed(normalized.substr(3)) == "stage == \"capture\"";
+      conditions.push_back({capture, capture});
+    } else if (normalized.starts_with("elseif:") || normalized == "else:") {
+      if (!conditions.empty() && conditions.back().capture_condition) {
+        conditions.back().active = false;
+      }
+    } else if (normalized == "endif:") {
+      if (!conditions.empty()) conditions.pop_back();
+    }
+    output.push_back(line);
   }
 
-  if (plugin_line.empty()) plugin_line = std::string(kDefaultPluginLine);
-  if (insertion_index == static_cast<std::size_t>(-1)) {
-    insertion_index = filtered.size();
-    if (!filtered.empty() && !filtered.back().empty()) filtered.emplace_back();
-    insertion_index = filtered.size();
+  if (!found_plugin) {
+    if (!output.empty() && !output.back().empty()) output.emplace_back();
+    if (!capture_only) output.emplace_back("Stage: capture");
+    output.emplace_back(kDefaultPluginLine);
   }
-
-  const std::vector<std::string> block{
-      std::string(kBeginMarker), "If: stage == \"capture\"", plugin_line,
-      "EndIf:", std::string(kEndMarker)};
-  filtered.insert(filtered.begin() + static_cast<std::ptrdiff_t>(insertion_index),
-                  block.begin(), block.end());
-  return join_lines(filtered, newline, trailing_newline || !config.empty());
+  return join_lines(output, newline, trailing_newline || !found_plugin);
 }
 
 std::string remove_echonull_capture_scope(const std::string_view config) {

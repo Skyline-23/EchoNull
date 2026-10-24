@@ -5,8 +5,8 @@ Windows microphone through Equalizer APO. It does not create another microphone,
 install an audio driver, or require a virtual audio cable.
 
 Users download one architecture-specific `EchoNullSetup.exe`. It contains the
-self-contained `EchoNullPlugin.dll`, installs it into Equalizer APO, and adds a
-capture-only configuration block automatically. There is no EchoNull CLI. The
+self-contained `EchoNullPlugin.dll`, installs it into Equalizer APO, and configures
+an ordinary capture-only Stage row. There is no EchoNull CLI. The
 playback selector, AEC and Noise Removal controls, output meter, and runtime
 status remain embedded in the plug-in editor.
 
@@ -52,10 +52,12 @@ registered and audio enhancements enabled.
 
 Applying a reference stores the selected endpoint ID in the existing VST
 instance's standard `ChunkData`. Equalizer APO's Auto Apply owns that state.
-The setup program edits `config.txt` once to create a marked, capture-only
-EchoNull block and preserves existing ChunkData during repair or upgrade.
-EchoNull never creates a second playback instance and therefore adds no
-processing or latency to the playback pipeline.
+The setup program preserves the existing EchoNull line and its ChunkData,
+and repairs an unscoped Stage to capture-only. It does not generate new marker
+comments or `If` / `EndIf` blocks. Existing capture scopes, including legacy
+blocks, are preserved unchanged. Repeated updates add no rows. Other filters
+retain their stages.
+With a capture-only Stage, EchoNull adds no processing to the playback pipeline.
 
 The live capture instance in `audiodg.exe` publishes its processed output level
 and runtime state through a read-only telemetry mapping. It also reports GPU
@@ -103,16 +105,18 @@ NVIDIA headers.
    | GeForce RTX 50 | `EchoNullSetup-Blackwell-RTX50.exe` |
 
 2. Run setup and choose **Install EchoNull**. It copies the self-contained DLL.
-   If EchoNull is already under a capture `Stage`, setup preserves that row and
-   the saved plug-in settings, and removes any redundant setup-created
-   condition block. Otherwise, setup
-   scopes the plug-in with `If: stage == "capture"`; no manual Stage row is
-   required. The same setup file can repair, update, or remove EchoNull. Setup
+   Setup preserves an existing capture `Stage` and saved plug-in settings.
+   A mixed `Stage: post-mix capture` immediately above EchoNull is repaired to
+   `Stage: capture`. Existing capture-only rows or blocks are preserved. A fresh install
+   adds only `Stage: capture` and the plug-in row. The same setup file can repair,
+   update, or remove EchoNull. Setup
    temporarily stops active services that depend on Windows Audio (including
    vendor audio helpers) and restores them after the plug-in is replaced.
 3. Open Equalizer APO Device Selector. Enable capture processing on the existing
    microphone and post-mix processing on playback devices you want listed in
-   the selector.
+   the selector. This device registration is separate from the **Stage row above
+   EchoNull**, which must have only **Capture** checked. Checking **Post-mix** on
+   that row also applies the microphone effects to speaker output.
 4. Open the embedded panel, choose the playback reference, and press
    **APPLY REFERENCE**.
 
@@ -205,10 +209,12 @@ Git, or command output.
 
 The playback selection and effect controls are serialized by the plug-in as
 VST `ChunkData`, so Auto Apply can persist them as part of the one existing
-capture-scoped plug-in line. Setup backs up the original `config.txt`, owns only
-the block between its EchoNull markers, and leaves unrelated filters in place.
-If the playback reference is stopped, unavailable, or the NVIDIA model cannot
-load, the capture instance bypasses AEC rather than muting the microphone.
+capture-scoped plug-in line. Setup backs up `config.txt`, preserves its other
+filters, and closes open Configuration Editors before repair so an old in-memory
+configuration cannot overwrite the repaired file. Avoid opening the same file
+in two editors with Instant mode enabled: either editor can save its whole copy
+when a plug-in setting changes. The device dropdown at the top of Configuration
+Editor controls its preview; it does not replace a capture-only Stage row.
 
 ## Limitations
 
