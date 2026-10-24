@@ -18,12 +18,13 @@ int wmain(int argc, wchar_t** argv) {
     const auto delay = argc > 2 ? std::stoul(argv[2]) : 0U;
     const auto rate = argc > 3 ? std::stoul(argv[3]) : 96000U;
     const auto frames = argc > 4 ? std::stoul(argv[4]) : 600U;
+    const int echo_delay = argc > 5 ? std::stoi(argv[5]) : -1;
     if ((rate != 48000 && rate != 96000) || frames < 200 || frames > 3000 || delay > 250)
       throw std::runtime_error("probe bounds: 48/96 kHz, 200-3000 frames, <=250 ms injected delay");
     const auto count = rate / 100;
     echonull::PluginProcessor processor;
     processor.set_sample_rate(rate);
-    processor.set_noise_enabled(true);
+    processor.set_noise_enabled(echo_delay < 0);
     processor.start(argv[1]);
     if (processor.aec_error_reason() != echonull::PluginErrorReason::none ||
         processor.noise_error_reason() != echonull::PluginErrorReason::none)
@@ -35,6 +36,7 @@ int wmain(int argc, wchar_t** argv) {
       sample = (static_cast<float>(rng >> 8) / 16777216.0F - .5F) * .15F;
     }
     std::vector<float> input(count), left(count), right(count);
+    const auto reference_signal = echo_delay >= 0 ? reference : std::vector<float>{};
     const float* inputs[] = {input.data(), input.data()};
     float* outputs[] = {left.data(), right.data()};
     const HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x2, TIMER_ALL_ACCESS);
@@ -43,7 +45,7 @@ int wmain(int argc, wchar_t** argv) {
     const auto origin = echonull::performance_timestamp_hns();
     processor.test_feed_reference(origin - 1'000'000, std::move(reference));
     std::cout << "READY\n" << std::flush;
-    double energy = 0;
+    double energy = 0, echo_input_energy = 0, echo_output_energy = 0;
     std::int64_t callback_max_hns = 0;
     for (unsigned long frame = 0; frame < frames; ++frame) {
       const auto wait = origin + frame * 100'000LL - echonull::performance_timestamp_hns();
@@ -56,7 +58,10 @@ int wmain(int argc, wchar_t** argv) {
       }
       for (std::size_t i = 0; i < count; ++i) {
         const auto t = static_cast<double>(frame * count + i) / rate;
-        input[i] = .13F * static_cast<float>(std::sin(t * 1320.0));
+        if (echo_delay >= 0) {
+          const auto index = static_cast<std::int64_t>(4800 + (frame * count + i) * 48000 / rate) - echo_delay * 48;
+          input[i] = index >= 0 ? .6F * reference_signal[static_cast<std::size_t>(index)] : 0;
+        } else input[i] = .13F * static_cast<float>(std::sin(t * 1320.0));
       }
       if (frame == 100 && delay != 0) processor.test_delay_next_job(delay);
       const auto begin = echonull::performance_timestamp_hns();
@@ -66,6 +71,12 @@ int wmain(int argc, wchar_t** argv) {
       for (const auto value : left) {
         if (!std::isfinite(value)) throw std::runtime_error("nonfinite output");
         energy += static_cast<double>(value) * value;
+      }
+      if (echo_delay >= 0 && frame >= 200) {
+        for (std::size_t i = 0; i < count; ++i) {
+          echo_input_energy += static_cast<double>(input[i]) * input[i];
+          echo_output_energy += static_cast<double>(left[i]) * left[i];
+        }
       }
     }
     const auto s = processor.test_diagnostics();
@@ -83,12 +94,17 @@ int wmain(int argc, wchar_t** argv) {
       << ",\"gpu_run_max_us\":" << s.gpu_run_max_us
       << ",\"callback_max_us\":" << callback_max_hns / 10
       << ",\"output_energy\":" << energy << "}\n";
-    if (s.aec_processed_frames < frames - 10 || s.noise_processed_frames < frames - 10 ||
+    if (s.aec_processed_frames < frames - 10 || (echo_delay < 0 && s.noise_processed_frames < frames - 10) ||
         s.aec_error || s.noise_error || s.queue_overruns || s.output_underrun_samples)
       throw std::runtime_error("pipeline failed or skipped enabled effects");
     if ((delay < 60 && s.protected_miss_frames != 0) ||
         (delay >= 80 && s.protected_miss_frames == 0))
       throw std::runtime_error("deadline regression");
+    if (echo_delay >= 0) {
+      const auto reduction = 10 * std::log10(echo_input_energy / std::max(echo_output_energy, 1e-20));
+      std::cout << "{\"echo_delay_ms\":" << echo_delay << ",\"aec_only_pipeline_reduction_db\":" << reduction << "}\n";
+      if (reduction < 6) throw std::runtime_error("production pipeline failed echo suppression");
+    }
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

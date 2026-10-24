@@ -150,9 +150,10 @@ void test_telemetry_bus_roundtrip() {
       static_cast<long double>(frequency.QuadPart));
 
   echonull::TelemetryBusWriter writer;
-  writer.open();
+  const auto mapping = L"Local\\EchoNull.Test.Telemetry." + std::to_wstring(GetCurrentProcessId());
+  writer.open(mapping);
   echonull::TelemetryBusReader reader;
-  require(reader.open(), "telemetry reader could not open the writer mapping");
+  require(reader.open(mapping), "telemetry reader could not open the writer mapping");
   const echonull::TelemetrySnapshot expected{
       now_hns, 0.625F, 3, 1, 0, 0, 7, 5, 3, 11, 100, 100, 12345, 4, 0, 1};
   writer.publish(expected);
@@ -289,8 +290,8 @@ void test_equalizer_apo_capture_scope() {
       "EndIf:\r\n"
       "# EchoNull setup end\r\n";
   require(echonull::install_echonull_capture_scope(redundant_old_block) ==
-              redundant_old_block,
-          "update modified an existing setup block");
+              "Stage: capture\r\nVSTPlugin: Library EchoNullPlugin.dll ChunkData \"saved\"\r\n",
+          "update did not migrate the exact obsolete setup wrapper");
   const std::string wrapped_mixed =
       "Stage: post-mix capture\n"
       "# EchoNull setup begin\n"
@@ -299,8 +300,11 @@ void test_equalizer_apo_capture_scope() {
       "EndIf:\n"
       "# EchoNull setup end\n"
       "Filter: ON HP Fc 80 Hz\n";
-  require(echonull::install_echonull_capture_scope(wrapped_mixed) == wrapped_mixed,
-          "update cleaned up a working legacy capture condition");
+  require(echonull::install_echonull_capture_scope(wrapped_mixed) ==
+              "Stage: post-mix capture\nStage: capture\n"
+              "VSTPlugin: Library EchoNullPlugin.dll ChunkData \"saved\"\n"
+              "Stage: post-mix capture\nFilter: ON HP Fc 80 Hz\n",
+          "wrapper migration changed the scope of unrelated filters");
   const std::string user_condition =
       "If: stage == \"capture\"\n"
       "VSTPlugin: Library EchoNullPlugin.dll ChunkData \"saved\"\n"

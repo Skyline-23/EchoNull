@@ -109,6 +109,54 @@ std::string install_echonull_capture_scope(const std::string_view config) {
   const std::string_view newline =
       config.find("\r\n") != std::string_view::npos ? "\r\n" : "\n";
   const bool trailing_newline = !config.empty() && config.back() == '\n';
+  // Remove only our exact obsolete wrapper. Never consume user filters or
+  // conditions, even when they were placed between our old marker comments.
+  const auto old_lines = split_lines(config);
+  std::vector<std::string> unwrapped;
+  bool removed_wrapper = false;
+  for (std::size_t index = 0; index < old_lines.size(); ++index) {
+    if (index + 4 < old_lines.size() &&
+        lowercase_trimmed(old_lines[index]) == lowercase_trimmed(kBeginMarker) &&
+        lowercase_trimmed(old_lines[index + 1]) == "if: stage == \"capture\"" &&
+        is_active_echonull_plugin(old_lines[index + 2]) &&
+        lowercase_trimmed(old_lines[index + 3]) == "endif:" &&
+        lowercase_trimmed(old_lines[index + 4]) == lowercase_trimmed(kEndMarker)) {
+      unwrapped.push_back("Stage: capture");
+      unwrapped.push_back(old_lines[index + 2]);
+      // Preserve the former scope of filters after the generated conditional.
+      bool has_following_filter = false;
+      for (std::size_t next = index + 5; next < old_lines.size(); ++next) {
+        const auto line = lowercase_trimmed(old_lines[next]);
+        if (line.empty() || line.starts_with('#')) continue;
+        has_following_filter = !line.starts_with("stage:");
+        break;
+      }
+      if (has_following_filter) {
+        std::string prior_stage = "Stage: post-mix capture";
+        for (std::size_t prior = 0; prior < index; ++prior) {
+          if (lowercase_trimmed(old_lines[prior]).starts_with("stage:"))
+            prior_stage = old_lines[prior];
+        }
+        if (lowercase_trimmed(prior_stage) != "stage: capture")
+          unwrapped.push_back(prior_stage);
+      }
+      index += 4;
+      removed_wrapper = true;
+    } else {
+      unwrapped.push_back(old_lines[index]);
+    }
+  }
+  if (removed_wrapper) {
+    // Collapse only adjacent capture rows created by the migration itself.
+    for (std::size_t index = 1; index < unwrapped.size();) {
+      if (lowercase_trimmed(unwrapped[index - 1]) == "stage: capture" &&
+          lowercase_trimmed(unwrapped[index]) == "stage: capture")
+        unwrapped.erase(unwrapped.begin() + static_cast<std::ptrdiff_t>(index));
+      else ++index;
+    }
+    return install_echonull_capture_scope(
+        join_lines(unwrapped, newline, trailing_newline));
+  }
   // Existing capture scopes, including legacy setup blocks, are user state.
   // Updates must leave them exactly as they are instead of cleaning them up.
   if (has_capture_scoped_echonull(config)) return std::string(config);

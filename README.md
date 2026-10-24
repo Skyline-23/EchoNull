@@ -104,10 +104,16 @@ NVIDIA headers.
    | GeForce RTX 40 | `EchoNullSetup-Ada-RTX40.exe` |
    | GeForce RTX 50 | `EchoNullSetup-Blackwell-RTX50.exe` |
 
-2. Run setup and choose **Install EchoNull**. It copies the self-contained DLL.
+2. First enable the existing microphone and reference playback device in Equalizer
+   APO Device Selector. Then run setup and choose **Install EchoNull**.
+   It copies the self-contained DLL and moves Equalizer APO on already-selected
+   microphones from stream effects to endpoint effects, before shared capture
+   streams split. This includes shared-mode RAW clients. The original vendor
+   stream effect is retained; an existing foreign endpoint effect is never replaced.
    Setup preserves an existing capture `Stage` and saved plug-in settings.
    A mixed `Stage: post-mix capture` immediately above EchoNull is repaired to
-   `Stage: capture`. Existing capture-only rows or blocks are preserved. A fresh install
+   `Stage: capture`. Exact obsolete EchoNull-generated wrappers are collapsed;
+   user-written conditions and filters are preserved. A fresh install
    adds only `Stage: capture` and the plug-in row. The same setup file can repair,
    update, or remove EchoNull. Setup
    temporarily stops active services that depend on Windows Audio (including
@@ -209,7 +215,7 @@ Git, or command output.
 
 The playback selection and effect controls are serialized by the plug-in as
 VST `ChunkData`, so Auto Apply can persist them as part of the one existing
-capture-scoped plug-in line. Setup backs up `config.txt`, preserves its other
+capture-scoped plug-in line. Setup does not create config backup files, preserves its other
 filters, and closes open Configuration Editors before repair so an old in-memory
 configuration cannot overwrite the repaired file. Avoid opening the same file
 in two editors with Instant mode enabled: either editor can save its whole copy
@@ -218,8 +224,19 @@ Editor controls its preview; it does not replace a capture-only Stage row.
 
 ## Limitations
 
-- Applications using ASIO, WASAPI exclusive mode, RAW mode, or another path
-  that bypasses Windows system effects also bypass EchoNull.
+See [capture routing and AEC validation](docs/capture-path-validation.md) for
+measured cancellation checks and the endpoint-hook compatibility boundaries.
+
+- Applications using ASIO, WASAPI exclusive mode, or another path that bypasses
+  Windows endpoint effects also bypass EchoNull. Shared-mode RAW capture is
+  covered by the endpoint hook; simply adding a VST row without running the
+  current installer does not enable that hook.
+- The endpoint hook requires an already-selected Equalizer APO microphone and
+  a free endpoint-effect slot. Setup refuses to overwrite other endpoint APOs.
+  Removing EchoNull restores the original registration. Reconfiguring the device
+  in Equalizer APO Device Selector can replace this hook; rerun EchoNull Setup.
+- Endpoint-effect routing is an interoperability extension, not an official
+  Equalizer APO capture installation mode or a Windows driver certification claim.
 - Equalizer APO must be active on the microphone capture endpoint. The selector
   currently lists only playback endpoints where post-mix is also enabled.
 - The first implementation targets normal mono/stereo endpoint layouts. A

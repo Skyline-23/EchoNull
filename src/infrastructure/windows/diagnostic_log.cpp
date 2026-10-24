@@ -171,7 +171,7 @@ void AsyncDiagnosticLog::open() {
     rotate_if_needed(path);
     std::ofstream output(path, std::ios::binary | std::ios::app);
     if (!output) return;
-    write_line(output, "SESSION started" + identity);
+    write_line(output, "SESSION started version=" ECHONULL_VERSION_STRING + identity);
 
     TelemetrySnapshot previous{};
     std::int64_t last_statistics_hns = 0;
@@ -227,6 +227,13 @@ void AsyncDiagnosticLog::open() {
                          " aec_processed_frames=" + std::to_string(snapshot.aec_processed_frames) +
                          " noise_processed_frames=" + std::to_string(snapshot.noise_processed_frames) +
                          " gpu_run_max_us=" + std::to_string(snapshot.gpu_run_max_us) +
+                         " runtime=" + runtime_name(snapshot.runtime_state) +
+                         " noise=" + noise_state_name(snapshot.noise_state) +
+                         " aec_input_rms=" + std::to_string(snapshot.aec_input_rms) +
+                         " reference_rms=" + std::to_string(snapshot.reference_rms) +
+                         " aec_output_rms=" + std::to_string(snapshot.aec_output_rms) +
+                         " reference_delay_ms=" + std::to_string(snapshot.reference_delay_ms) +
+                         " delay_confidence=" + std::to_string(snapshot.delay_confidence) +
                          identity);
           last_statistics_hns = snapshot.timestamp_hns;
         }

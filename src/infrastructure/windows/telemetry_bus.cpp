@@ -14,10 +14,10 @@
 namespace echonull {
 namespace {
 
-constexpr wchar_t kGlobalMappingName[] = L"Global\\EchoNull.Telemetry.v4";
-constexpr wchar_t kLocalMappingName[] = L"Local\\EchoNull.Telemetry.v4";
+constexpr wchar_t kGlobalMappingName[] = L"Global\\EchoNull.Telemetry.v5";
+constexpr wchar_t kLocalMappingName[] = L"Local\\EchoNull.Telemetry.v5";
 constexpr std::uint32_t kMagic = 0x454E544DU;  // ENTM
-constexpr std::uint32_t kVersion = 3;
+constexpr std::uint32_t kVersion = 4;
 
 struct SharedTelemetry {
   std::uint32_t magic = 0;
@@ -60,7 +60,7 @@ bool is_windows_audio_engine_process() {
 
 TelemetryBusWriter::~TelemetryBusWriter() { close(); }
 
-void TelemetryBusWriter::open() {
+void TelemetryBusWriter::open(const std::wstring& isolated_mapping) {
   close();
   PSECURITY_DESCRIPTOR descriptor = nullptr;
   if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -71,8 +71,9 @@ void TelemetryBusWriter::open() {
   SECURITY_ATTRIBUTES security{sizeof(security), descriptor, FALSE};
   mapping_ = CreateFileMappingW(
       INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0,
-      static_cast<DWORD>(sizeof(SharedTelemetry)), kGlobalMappingName);
-  if (mapping_ == nullptr && GetLastError() == ERROR_ACCESS_DENIED) {
+      static_cast<DWORD>(sizeof(SharedTelemetry)),
+      isolated_mapping.empty() ? kGlobalMappingName : isolated_mapping.c_str());
+  if (isolated_mapping.empty() && mapping_ == nullptr && GetLastError() == ERROR_ACCESS_DENIED) {
     mapping_ = CreateFileMappingW(
         INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0,
         static_cast<DWORD>(sizeof(SharedTelemetry)), kLocalMappingName);
@@ -114,10 +115,12 @@ void TelemetryBusWriter::publish(const TelemetrySnapshot& snapshot) noexcept {
 
 TelemetryBusReader::~TelemetryBusReader() { close(); }
 
-bool TelemetryBusReader::open() {
+bool TelemetryBusReader::open(const std::wstring& isolated_mapping) {
   close();
-  mapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, kLocalMappingName);
-  if (mapping_ == nullptr) {
+  isolated_mapping_ = isolated_mapping;
+  mapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE,
+      isolated_mapping.empty() ? kLocalMappingName : isolated_mapping.c_str());
+  if (mapping_ == nullptr && isolated_mapping.empty()) {
     mapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, kGlobalMappingName);
   }
   if (mapping_ == nullptr) return false;
@@ -137,7 +140,7 @@ bool TelemetryBusReader::open() {
 void TelemetryBusReader::close() noexcept { close_mapping(mapping_, view_); }
 
 std::optional<TelemetrySnapshot> TelemetryBusReader::read_latest() {
-  if (view_ == nullptr && !open()) return std::nullopt;
+  if (view_ == nullptr && !open(isolated_mapping_)) return std::nullopt;
   const auto* shared = state(view_);
   for (int attempt = 0; attempt < 4; ++attempt) {
     const LONG before = shared->sequence;

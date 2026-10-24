@@ -13,6 +13,7 @@
 
 #include "infrastructure/text_encoding.hpp"
 #include "infrastructure/windows/equalizer_apo.hpp"
+#include "infrastructure/windows/capture_endpoint_hook.hpp"
 
 namespace echonull {
 namespace {
@@ -261,6 +262,10 @@ void PluginEditor::refresh() {
       SendMessageW(playback_combo_, CB_SETCURSEL,
                    selected_item == CB_ERR ? 0 : selected_item, 0);
       EnableWindow(apply_button_, TRUE);
+      if (!capture_endpoint_hooks_present()) {
+        set_status(L"Microphone endpoint hook missing. Run the current EchoNull Setup.", false);
+        return;
+      }
       set_status(settings_.playback_endpoint_id.empty()
                      ? L"Choose a playback endpoint, then apply."
                      : L"Playback reference loaded from plug-in settings.",

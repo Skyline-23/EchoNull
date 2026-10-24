@@ -68,6 +68,7 @@ endif()
 
 add_library(echonull_infrastructure
   src/infrastructure/equalizer_apo_config.cpp
+  src/infrastructure/windows/capture_endpoint_hook.cpp
   src/infrastructure/nvidia/cuda_audio_context.cpp
   src/infrastructure/nvidia/nvafx_api.cpp
   src/infrastructure/nvidia/nvafx_aec.cpp
@@ -87,7 +88,8 @@ target_link_libraries(echonull_infrastructure PUBLIC echonull_domain echonull_ap
   PRIVATE ole32 uuid avrt advapi32)
 target_include_directories(echonull_infrastructure PUBLIC src)
 target_compile_definitions(echonull_infrastructure PUBLIC
-  NOMINMAX WIN32_LEAN_AND_MEAN ECHONULL_HAS_NVAFX=${ECHONULL_HAS_NVAFX})
+  NOMINMAX WIN32_LEAN_AND_MEAN ECHONULL_HAS_NVAFX=${ECHONULL_HAS_NVAFX}
+  ECHONULL_VERSION_STRING="${PROJECT_VERSION}")
 if(MSVC)
   target_compile_options(echonull_infrastructure PRIVATE /W4 /permissive- /utf-8 /EHsc)
 endif()
@@ -191,6 +193,7 @@ endif()
 
 add_executable(echonull_setup WIN32
   src/setup/setup_main.cpp
+  src/infrastructure/windows/capture_endpoint_hook.cpp
   src/infrastructure/equalizer_apo_config.cpp)
 target_include_directories(echonull_setup PRIVATE src src/setup)
 target_compile_definitions(echonull_setup PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -221,6 +224,8 @@ endif()
 if(ECHONULL_BUILD_TESTS)
   include(CTest)
   if(ECHONULL_HAS_NVAFX)
+    add_executable(echonull_aec_signal_tests tests/aec_signal_tests.cpp)
+    target_link_libraries(echonull_aec_signal_tests PRIVATE echonull_infrastructure)
     add_executable(echonull_nvafx_benchmark tests/nvafx_benchmark.cpp)
     target_link_libraries(echonull_nvafx_benchmark PRIVATE echonull_infrastructure)
     add_executable(echonull_pipeline_benchmark tests/pipeline_benchmark.cpp
@@ -235,6 +240,11 @@ if(ECHONULL_BUILD_TESTS)
     target_compile_options(echonull_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
   endif()
   add_test(NAME echonull_core_tests COMMAND echonull_tests)
+  add_executable(echonull_capture_endpoint_tests tests/capture_endpoint_tests.cpp)
+  target_link_libraries(echonull_capture_endpoint_tests PRIVATE echonull_infrastructure)
+  add_test(NAME echonull_capture_endpoint_tests COMMAND echonull_capture_endpoint_tests)
+  add_executable(echonull_capture_path_probe tests/capture_path_probe.cpp)
+  target_link_libraries(echonull_capture_path_probe PRIVATE echonull_infrastructure ole32)
   add_executable(echonull_plugin_smoke_tests
     tests/plugin_smoke_tests.cpp)
   target_include_directories(echonull_plugin_smoke_tests PRIVATE

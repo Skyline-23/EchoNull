@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace echonull {
 
@@ -24,6 +25,11 @@ struct TelemetrySnapshot {
   std::uint32_t gpu_priority_class = 0;
   std::uint32_t gpu_priority_status = 0;
   std::uint32_t shared_cuda_context = 0;
+  float aec_input_rms = 0;
+  float reference_rms = 0;
+  float aec_output_rms = 0;
+  float reference_delay_ms = 0;
+  float delay_confidence = 0;
 };
 
 [[nodiscard]] bool is_windows_audio_engine_process();
@@ -36,7 +42,7 @@ class TelemetryBusWriter {
   TelemetryBusWriter(const TelemetryBusWriter&) = delete;
   TelemetryBusWriter& operator=(const TelemetryBusWriter&) = delete;
 
-  void open();
+  void open(const std::wstring& isolated_mapping = {});
   void close() noexcept;
   void publish(const TelemetrySnapshot& snapshot) noexcept;
 
@@ -53,11 +59,12 @@ class TelemetryBusReader {
   TelemetryBusReader(const TelemetryBusReader&) = delete;
   TelemetryBusReader& operator=(const TelemetryBusReader&) = delete;
 
-  bool open();
+  bool open(const std::wstring& isolated_mapping = {});
   void close() noexcept;
   [[nodiscard]] std::optional<TelemetrySnapshot> read_latest();
 
  private:
+  std::wstring isolated_mapping_;
   HANDLE mapping_ = nullptr;
   void* view_ = nullptr;
 };

@@ -16,6 +16,7 @@
 
 #include "infrastructure/bundle_format.hpp"
 #include "infrastructure/equalizer_apo_config.hpp"
+#include "infrastructure/windows/capture_endpoint_hook.hpp"
 
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
@@ -125,11 +126,6 @@ void write_text_atomic(const std::filesystem::path& path,
 }
 
 void install_configuration(const std::filesystem::path& path) {
-  const auto backup = path.wstring() + L".echonull-backup";
-  if (!CopyFileW(path.c_str(), backup.c_str(), TRUE) &&
-      GetLastError() != ERROR_FILE_EXISTS) {
-    throw windows_error("Cannot back up Equalizer APO config.txt");
-  }
   write_text_atomic(path, echonull::install_echonull_capture_scope(read_text(path)));
 }
 
@@ -491,7 +487,7 @@ int choose_action(const bool installed) {
   TASKDIALOGCONFIG config{sizeof(config)};
   config.hInstance = GetModuleHandleW(nullptr);
   config.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
-  config.pszWindowTitle = L"EchoNull Setup";
+  config.pszWindowTitle = L"EchoNull Setup 0.1.9";
   config.pszMainIcon = TD_INFORMATION_ICON;
   config.pszMainInstruction = installed ? L"EchoNull is already installed"
                                         : L"Install EchoNull";
@@ -515,7 +511,7 @@ int choose_action(const bool installed) {
 
 void show_result(const wchar_t* instruction, const wchar_t* content) {
   TASKDIALOGCONFIG config{sizeof(config)};
-  config.pszWindowTitle = L"EchoNull Setup";
+  config.pszWindowTitle = L"EchoNull Setup 0.1.9";
   config.pszMainIcon = TD_INFORMATION_ICON;
   config.pszMainInstruction = instruction;
   config.pszContent = content;
@@ -523,23 +519,43 @@ void show_result(const wchar_t* instruction, const wchar_t* content) {
   TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
 }
 
+void setup_log(const std::string& message) noexcept {
+  try {
+    wchar_t program_data[32768]{};
+    const auto count = GetEnvironmentVariableW(L"ProgramData", program_data, 32768);
+    if (count == 0 || count >= 32768) return;
+    std::ofstream output(std::filesystem::path(program_data) / L"EchoNull" / L"Logs" / L"Setup.log",
+                         std::ios::app);
+    SYSTEMTIME time{}; GetLocalTime(&time);
+    output << time.wYear << '-' << time.wMonth << '-' << time.wDay << ' '
+           << time.wHour << ':' << time.wMinute << ':' << time.wSecond
+           << " version=0.1.9 " << message << '\n';
+  } catch (...) {}
+}
+
 }  // namespace
 
-int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR command_line, int) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   try {
     const auto paths = equalizer_apo_paths();
-    const int action = choose_action(std::filesystem::is_regular_file(paths.plugin));
+    const std::wstring arguments = command_line ? command_line : L"";
+    const bool repair = arguments == L"/repair";
+    const int action = repair ? 100 : choose_action(std::filesystem::is_regular_file(paths.plugin));
     if (action == IDCANCEL) return 0;
+    prepare_diagnostic_log_directory();
+    setup_log("START action=" + std::to_string(action));
     close_editor(paths.editor);
     {
       AudioServiceGuard audio;
       terminate_audiodg();
       if (action == 100) {
-        prepare_diagnostic_log_directory();
         extract_plugin(module_path(), paths.plugin);
         install_configuration(paths.config);
+        const auto hooks = echonull::install_capture_endpoint_hooks();
+        setup_log("REGISTERED capture_endpoint_hooks=" + std::to_string(hooks));
       } else if (action == 101) {
+        echonull::restore_capture_endpoint_hooks();
         remove_configuration(paths.config);
         if (!DeleteFileW(paths.plugin.c_str()) &&
             GetLastError() != ERROR_FILE_NOT_FOUND &&
@@ -549,17 +565,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         }
       }
     }
+    setup_log("SUCCESS action=" + std::to_string(action));
     if (action == 100) {
       show_result(L"EchoNull is ready",
                   L"Open Equalizer APO Configuration Editor, open the EchoNull "
-                  L"panel, and select a playback reference. Capture scoping is "
-                  L"already configured.");
+                  L"panel, and select a playback reference. The selected microphones "
+                  L"now use endpoint processing, including shared-mode RAW input.");
     } else {
       show_result(L"EchoNull was removed",
                   L"The setup-owned capture configuration and plug-in were removed.");
     }
     return 0;
   } catch (const std::exception& error) {
+    setup_log("ERROR " + std::string(error.what()));
     const auto message = widen(error.what());
     MessageBoxW(nullptr, message.c_str(), L"EchoNull Setup",
                 MB_OK | MB_ICONERROR);

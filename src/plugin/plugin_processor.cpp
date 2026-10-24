@@ -14,7 +14,6 @@
 #include <utility>
 #include <vector>
 
-#include "application/delay_estimator.hpp"
 #include "application/protected_output.hpp"
 #include "application/streaming_resampler.hpp"
 #include "application/timestamped_audio_buffer.hpp"
@@ -32,6 +31,12 @@
 
 namespace echonull {
 namespace {
+
+float signal_rms(const std::span<const float> samples) {
+  double power = 0;
+  for (const auto value : samples) power += static_cast<double>(value) * value;
+  return samples.empty() ? 0.0F : static_cast<float>(std::sqrt(power / samples.size()));
+}
 
 class FloatFifo {
  public:
@@ -287,7 +292,6 @@ struct PluginProcessor::Impl {
   std::unique_ptr<TelemetryBusWriter> telemetry_writer;
   std::unique_ptr<AsyncDiagnosticLog> diagnostic_log;
   std::unique_ptr<TimestampedAudioBuffer> reference_timeline;
-  std::unique_ptr<DelayEstimator> delay_estimator;
   std::unique_ptr<NvafxAec> aec;
   std::unique_ptr<NvafxDenoiser> denoiser;
   SpscFrameQueue<WorkFrame> work_queue;
@@ -306,6 +310,7 @@ struct PluginProcessor::Impl {
   std::atomic<std::uint64_t> aec_processed_frames{0};
   std::atomic<std::uint64_t> noise_processed_frames{0};
   std::atomic<std::uint64_t> gpu_run_max_us{0};
+  std::atomic<float> aec_input_rms{0}, reference_rms{0}, aec_output_rms{0};
   std::uint32_t gpu_priority_class = 0;
   std::uint32_t gpu_priority_status = 0;
   std::uint32_t shared_cuda_context = 0;
@@ -331,8 +336,7 @@ struct PluginProcessor::Impl {
   std::vector<float> transition_scratch;
   std::int64_t input_origin_hns = 0;
   std::int64_t near_queue_start_hns = 0;
-  double delay_ms = 40.0;
-  bool auto_delay = true;
+  double delay_ms = 0.0;
   double max_delay_ms = 250.0;
   std::uint32_t timeline_capacity_ms = 4000;
   std::size_t aec_frame_samples = 0;
@@ -432,13 +436,14 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
       runtime_ready = false;
     }
 #endif
-    impl_->delay_ms = 40.0;
+    // Device timestamps already align the render and capture timelines. A
+    // noisy envelope correlation can place the reference AFTER its echo,
+    // which makes cancellation non-causal. Leave acoustic path delay to AEC.
+    impl_->delay_ms = 0.0;
     impl_->output_resampler =
         std::make_unique<StreamingResampler>(kSampleRate, sample_rate_);
     impl_->reference_timeline = std::make_unique<TimestampedAudioBuffer>(
         impl_->timeline_capacity_ms, kSampleRate);
-    impl_->delay_estimator = std::make_unique<DelayEstimator>(
-        kSampleRate, impl_->delay_ms, impl_->max_delay_ms);
     aec_error_reason_.store(
         !runtime_ready ? PluginErrorReason::runtime_or_gpu
         : !aec_models.empty()
@@ -601,6 +606,9 @@ void PluginProcessor::start(const std::filesystem::path& plugin_path) {
               impl_->aec_ready.load(std::memory_order_acquire)) {
             try {
               impl_->aec->process(job->near_end, job->far_end, processed);
+              impl_->aec_input_rms.store(signal_rms(job->near_end), std::memory_order_relaxed);
+              impl_->reference_rms.store(signal_rms(job->far_end), std::memory_order_relaxed);
+              impl_->aec_output_rms.store(signal_rms(processed), std::memory_order_relaxed);
               aec_complete = true;
               impl_->aec_processed_frames.fetch_add(1, std::memory_order_relaxed);
             } catch (...) {
@@ -758,7 +766,6 @@ void PluginProcessor::stop() noexcept {
   impl_->reference_timeline.reset();
   impl_->telemetry_writer.reset();
   impl_->diagnostic_log.reset();
-  impl_->delay_estimator.reset();
   impl_->aec.reset();
   impl_->denoiser.reset();
   impl_->near_queue.clear();
@@ -786,6 +793,9 @@ void PluginProcessor::stop() noexcept {
   impl_->aec_processed_frames.store(0, std::memory_order_relaxed);
   impl_->noise_processed_frames.store(0, std::memory_order_relaxed);
   impl_->gpu_run_max_us.store(0, std::memory_order_relaxed);
+  impl_->aec_input_rms.store(0, std::memory_order_relaxed);
+  impl_->reference_rms.store(0, std::memory_order_relaxed);
+  impl_->aec_output_rms.store(0, std::memory_order_relaxed);
   impl_->gpu_priority_class = 0;
   impl_->gpu_priority_status = 0;
   impl_->shared_cuda_context = 0;
@@ -836,7 +846,12 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
           impl_->noise_processed_frames.load(std::memory_order_relaxed),
           impl_->gpu_run_max_us.load(std::memory_order_relaxed),
           impl_->gpu_priority_class, impl_->gpu_priority_status,
-          impl_->shared_cuda_context};
+          impl_->shared_cuda_context,
+          impl_->aec_input_rms.load(std::memory_order_relaxed),
+          impl_->reference_rms.load(std::memory_order_relaxed),
+          impl_->aec_output_rms.load(std::memory_order_relaxed),
+          static_cast<float>(impl_->delay_ms),
+          0.0F};
       if (impl_->telemetry_writer) impl_->telemetry_writer->publish(snapshot);
       if (impl_->diagnostic_log) impl_->diagnostic_log->publish(snapshot);
     }
@@ -966,24 +981,20 @@ void PluginProcessor::process(const float* const* inputs, float** outputs,
       impl_->pending_frames.pop();
     };
     while (impl_->near_queue.size() >= frame_samples) {
+      // Loopback delivery can trail the capture callback. Use the existing
+      // output lead to wait at most two frames instead of shifting playback
+      // into the past or feeding a not-yet-arrived reference as silence.
+      if (aec_enabled_.load(std::memory_order_relaxed) && impl_->loopback &&
+          !reference_failed && impl_->reference_timeline &&
+          impl_->near_queue.size() < frame_samples * 3 &&
+          impl_->reference_timeline->read(impl_->near_queue_start_hns, unshifted_far) < 0.98) {
+        break;
+      }
       impl_->near_queue.read_exact(near_end);
       impl_->overload_hold_samples =
           impl_->overload_hold_samples > frame_samples
               ? impl_->overload_hold_samples - frame_samples
               : 0;
-
-      double unshifted_coverage = 0.0;
-      if (impl_->reference_timeline) {
-        unshifted_coverage = impl_->reference_timeline->read(
-            impl_->near_queue_start_hns, unshifted_far);
-      }
-      if (unshifted_coverage >= 0.98 && impl_->auto_delay &&
-          impl_->delay_estimator) {
-        impl_->delay_estimator->add(near_end, unshifted_far);
-        if (impl_->delay_estimator->has_estimate()) {
-          impl_->delay_ms = impl_->delay_estimator->delay_ms();
-        }
-      }
 
       double far_coverage = 0.0;
       if (impl_->reference_timeline) {
